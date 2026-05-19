@@ -30,6 +30,12 @@ try {
     timeout: 30_000,
     maxBuffer: 1_000_000,
   })).stdout);
+  if (!preflight.ready) {
+    const failing = (preflight.checks || []).filter((check) => !check.ok)
+      .map((check) => `${check.id}: ${check.detail || check.error || "non disponibile"}`)
+      .join(" | ");
+    console.error(`Preflight check falliti: ${failing}`);
+  }
   assert(preflight.ready, "preflight packaging pronto sulla piattaforma corrente");
   assert(preflight.checks.some((check) => check.id === "local-api" && check.ok), "preflight vede API locale completa");
 
