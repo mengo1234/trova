@@ -74,7 +74,8 @@ jobs:
           WINDOWS_SIGN_COMMAND: ${{ secrets.WINDOWS_SIGN_COMMAND }}
         run: |
           EXTRA=""
-          if [ "${{ github.event.inputs.require_signing || 'false' }}" = "true" ] || [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          # Richiediamo la firma solo se manualmente attivato; di default i tag producono installer non firmati ma installabili.
+          if [ "${{ github.event.inputs.require_signing || 'false' }}" = "true" ]; then
             EXTRA="--require-signing"
           fi
           node scripts/trova-release.mjs status $EXTRA
@@ -96,7 +97,8 @@ jobs:
           WINDOWS_SIGN_COMMAND: ${{ secrets.WINDOWS_SIGN_COMMAND }}
         run: |
           EXTRA=""
-          if [ "${{ github.event.inputs.require_signing || 'false' }}" = "true" ] || [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          # Richiediamo la firma solo se manualmente attivato; di default i tag producono installer non firmati ma installabili.
+          if [ "${{ github.event.inputs.require_signing || 'false' }}" = "true" ]; then
             EXTRA="--require-signing"
           fi
           node scripts/trova-release.mjs build $EXTRA
