@@ -1,0 +1,25 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "publisher": "Fabio",
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "tsp": false,
+      "allowDowngrades": false
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.13",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4MDEzRTA5OTM5RTlCRTcKUldUbm01NlRDVDRCT0duU1VJWmcrUXBOcTZkQ09Zb3VRMXhoM2tZNHNkK3diMUNIMGpvMDlrTmUK",
+      "endpoints": [
+        "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

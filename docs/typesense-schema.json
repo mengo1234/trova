@@ -1,0 +1,28 @@
+{
+  "name": "trova_files",
+  "fields": [
+    { "name": "file_path", "type": "string", "facet": true },
+    { "name": "chunk_index", "type": "int32" },
+    { "name": "chunk_total", "type": "int32" },
+    { "name": "file_extension", "type": "string", "facet": true },
+    { "name": "file_size", "type": "int64" },
+    { "name": "mime_type", "type": "string", "facet": true },
+    { "name": "modified_time", "type": "int64" },
+    { "name": "content", "type": "string" },
+    { "name": "file_hash", "type": "string" },
+    { "name": "created_time", "type": "int64" },
+    { "name": "indexed_at", "type": "int64" },
+    { "name": "title", "type": "string" },
+    { "name": "author", "type": "string", "facet": true },
+    { "name": "language", "type": "string", "facet": true },
+    {
+      "name": "embedding",
+      "type": "float[]",
+      "embed": {
+        "from": ["title", "author", "content"],
+        "model_config": { "model_name": "ts/paraphrase-multilingual-mpnet-base-v2" }
+      }
+    }
+  ],
+  "default_sorting_field": "chunk_index"
+}
