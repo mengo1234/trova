@@ -15,6 +15,7 @@
     "tauri": "tauri",
     "desktop": "tauri dev",
     "local-api": "node scripts/local-backend.mjs",
+    "bundle:backend": "node scripts/build-backend-binary.mjs",
     "test:goal1": "node scripts/goal1-core-test.mjs",
     "test:goal2": "node scripts/goal2-semantic-test.mjs",
     "test:goal3": "node scripts/goal3-vision-test.mjs",

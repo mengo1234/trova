@@ -35,6 +35,9 @@
       "../package-lock.json",
       "../node_modules/chokidar/**/*",
       "../node_modules/readdirp/**/*"
+    ],
+    "externalBin": [
+      "binaries/trova-backend"
     ]
   }
 }

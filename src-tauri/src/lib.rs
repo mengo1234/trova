@@ -310,29 +310,50 @@ fn ensure_local_api(app: tauri::AppHandle) -> Result<LocalApiBootStatus, String>
         });
     }
 
-    let script_path = locate_local_api_script(&app)?;
-    let root = script_path
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
+    // Cerca prima il sidecar bundled (trova-backend-<triple>[.exe]) — zero dipendenze sul PC dell'utente.
+    let sidecar = locate_local_api_sidecar(&app);
+    let (command_path, command_args, root_dir) = if let Some(binary) = sidecar.clone() {
+        let parent = binary
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        (binary, Vec::<PathBuf>::new(), parent)
+    } else {
+        // Fallback in dev / per chi ha Node installato: esegue lo script .mjs.
+        let script_path = locate_local_api_script(&app)?;
+        let root = script_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let node = env::var("TROVA_NODE_PATH").unwrap_or_else(|_| "node".into());
+        (PathBuf::from(node), vec![script_path], root)
+    };
+
     let data_path = data_dir();
     fs::create_dir_all(&data_path).map_err(|e| e.to_string())?;
 
-    let node = env::var("TROVA_NODE_PATH").unwrap_or_else(|_| "node".into());
-    let mut child = Command::new(&node)
-        .arg(&script_path)
-        .current_dir(&root)
-        .env("TROVA_ROOT", &root)
+    let mut cmd = Command::new(&command_path);
+    for arg in &command_args {
+        cmd.arg(arg);
+    }
+    let mut child = cmd
+        .current_dir(&root_dir)
+        .env("TROVA_ROOT", &root_dir)
         .env("TROVA_DATA_DIR", &data_path)
         .env("TROVA_LOCAL_API_PORT", port.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Impossibile avviare Node/local API: {e}"))?;
+        .map_err(|e| format!("Impossibile avviare backend Trova: {e}"))?;
 
     let pid = Some(child.id());
+    let command_label = command_path.display().to_string();
+    let script_label = command_args
+        .first()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| command_path.display().to_string());
     for _ in 0..30 {
         if local_api_is_alive(port) {
             let slot = LOCAL_API_CHILD.get_or_init(|| Mutex::new(None));
@@ -342,8 +363,8 @@ fn ensure_local_api(app: tauri::AppHandle) -> Result<LocalApiBootStatus, String>
                 already_running: false,
                 port,
                 pid,
-                command: node,
-                script_path: script_path.display().to_string(),
+                command: command_label,
+                script_path: script_label,
                 data_dir: data_path.display().to_string(),
                 message: format!("API locale avviata su 127.0.0.1:{port}"),
             });
@@ -1942,6 +1963,44 @@ fn local_api_is_alive(port: u16) -> bool {
         .and_then(|response| response.json::<Value>().ok())
         .and_then(|payload| payload.get("ok").and_then(Value::as_bool))
         .unwrap_or(false)
+}
+
+/// Cerca il binary sidecar `trova-backend[-<triple>][.exe]` bundled da Tauri.
+/// Tauri rinomina i sidecar in run-time togliendo il suffisso del target; cerchiamo entrambe le forme.
+fn locate_local_api_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let base_names: &[&str] = &[
+        "trova-backend",
+        "trova-backend-x86_64-pc-windows-msvc",
+        "trova-backend-aarch64-pc-windows-msvc",
+        "trova-backend-x86_64-apple-darwin",
+        "trova-backend-aarch64-apple-darwin",
+        "trova-backend-x86_64-unknown-linux-gnu",
+        "trova-backend-aarch64-unknown-linux-gnu",
+    ];
+    let mut candidate_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidate_dirs.push(parent.to_path_buf());
+            candidate_dirs.push(parent.join("..").join("Resources"));
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidate_dirs.push(resource_dir);
+    }
+    if let Ok(cwd) = env::current_dir() {
+        candidate_dirs.push(cwd.join("src-tauri").join("binaries"));
+        candidate_dirs.push(cwd.join("binaries"));
+    }
+    for dir in candidate_dirs {
+        for base in base_names {
+            let candidate = dir.join(format!("{base}{exe_suffix}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn locate_local_api_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {

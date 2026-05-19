@@ -42,10 +42,17 @@ jobs:
           node-version: 22
           cache: npm
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build local-backend sidecar (zero-config su Windows/macOS)
+        run: npm run bundle:backend
 
       - name: Goal 8 packaging smoke
         run: npm run test:goal8
