@@ -3695,6 +3695,7 @@ async function commandComponent(id, label, category, description, binary, args, 
 }
 
 async function commandCandidate(binary, args) {
+  const onWindows = os.platform() === "win32";
   const candidates = [
     { command: path.join(BIN_DIR, binary), prefix: [] },
     { command: path.join(BIN_DIR, `${binary}.exe`), prefix: [] },
@@ -3704,7 +3705,13 @@ async function commandCandidate(binary, args) {
   ];
   for (const candidate of candidates) {
     try {
-      await execFile(candidate.command, [...candidate.prefix, ...args], { timeout: 4000, maxBuffer: 120_000 });
+      // Su Windows i shim .cmd/.bat di npm/cargo/ecc richiedono shell:true per essere eseguiti.
+      await execFile(candidate.command, [...candidate.prefix, ...args], {
+        timeout: 4000,
+        maxBuffer: 120_000,
+        shell: onWindows && (candidate.command === binary || candidate.command.endsWith(binary)),
+        windowsHide: true,
+      });
       return candidate;
     } catch {
       // try next location
@@ -4196,7 +4203,16 @@ function trimInstallOutput(output) {
 }
 
 async function commandVersion(command, args) {
-  const { stdout, stderr } = await execFile(command, args, { timeout: 4000, maxBuffer: 120_000 });
+  const onWindows = os.platform() === "win32";
+  // shell:true serve su Windows quando `command` e un binary risolto via PATH (es. npm.cmd)
+  // e non un percorso assoluto a .exe.
+  const looksLikeShim = onWindows && !path.isAbsolute(command) && !command.toLowerCase().endsWith(".exe");
+  const { stdout, stderr } = await execFile(command, args, {
+    timeout: 4000,
+    maxBuffer: 120_000,
+    shell: looksLikeShim,
+    windowsHide: true,
+  });
   const line = `${stdout || stderr}`.split("\n").find(Boolean) || "installato";
   return line.length > 96 ? `${line.slice(0, 93)}...` : line;
 }
