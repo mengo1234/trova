@@ -110,34 +110,26 @@ async function runBuild(status) {
 }
 
 async function tool(id, label, binary, toolArgs) {
-  // Su Windows molti tool installati via shim sono .cmd/.bat (npm, npx, pnpm, yarn);
-  // execFile non li risolve senza estensione. Proviamo in cascata.
-  const candidates = os.platform() === "win32"
-    ? [`${binary}.cmd`, `${binary}.exe`, `${binary}.bat`, binary]
-    : [binary];
-  let lastErr;
-  for (const candidate of candidates) {
-    try {
-      const { stdout, stderr } = await execFile(candidate, toolArgs, {
-        cwd: ROOT,
-        timeout: 8000,
-        maxBuffer: 200_000,
-        shell: false,
-      });
-      return {
-        id,
-        label,
-        binary: candidate,
-        installed: true,
-        version: String(stdout || stderr).split("\n").find(Boolean) || "installato",
-        error: "",
-      };
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  {
-    const err = lastErr || new Error("non disponibile");
+  // Su Windows i tool installati via shim (npm, npx, pnpm, yarn) sono file .cmd/.bat
+  // che richiedono di passare per la shell — execFile diretto fallisce con ENOENT.
+  const onWindows = os.platform() === "win32";
+  try {
+    const { stdout, stderr } = await execFile(binary, toolArgs, {
+      cwd: ROOT,
+      timeout: 8000,
+      maxBuffer: 200_000,
+      shell: onWindows, // su Windows usa cmd.exe per risolvere .cmd/.bat shim
+      windowsHide: true,
+    });
+    return {
+      id,
+      label,
+      binary,
+      installed: true,
+      version: String(stdout || stderr).split("\n").find(Boolean) || "installato",
+      error: "",
+    };
+  } catch (err) {
     return {
       id,
       label,
