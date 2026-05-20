@@ -31,13 +31,20 @@ const NVIDIA_EMBEDDINGS_URL = process.env.TROVA_NVIDIA_EMBEDDINGS_URL || "https:
 const NVIDIA_CHAT_MODEL = process.env.TROVA_NVIDIA_CHAT_MODEL || "deepseek-ai/deepseek-v4-flash";
 // Registro modelli NVIDIA NIM (free tier, aggiornati maggio 2026)
 const NVIDIA_MODEL_REGISTRY = {
-  // Chat / reasoning
+  // Chat / reasoning testuale
   "nemotron-super-49b": { id: "nvidia/llama-3.3-nemotron-super-49b-v1", category: "chat", label: "NVIDIA Nemotron Super 49B", purpose: "chat e reasoning, modello di punta NVIDIA" },
   "deepseek-v4-flash": { id: "deepseek-ai/deepseek-v4-flash", category: "chat", label: "DeepSeek V4 Flash", purpose: "riassunti veloci, contesto ampio" },
   "llama-3-3-70b": { id: "meta/llama-3.3-70b-instruct", category: "chat", label: "Llama 3.3 70B Instruct", purpose: "chat general purpose" },
+  // Multimodale (vede immagini)
+  "llama-3.2-vision-90b": { id: "meta/llama-3.2-90b-vision-instruct", category: "vision", label: "Llama 3.2 90B Vision", purpose: "modello vision: capisce immagini caricate + chat", multimodal: true },
+  "llama-3.2-vision-11b": { id: "meta/llama-3.2-11b-vision-instruct", category: "vision", label: "Llama 3.2 11B Vision", purpose: "vision veloce per OCR e descrizioni immagini", multimodal: true },
+  // OCR dedicato
+  "ocdrnet": { id: "baidu/paddleocr", category: "ocr", label: "NVIDIA OCR (PaddleOCR via NIM)", purpose: "estrae testo da immagini, screenshot, scansioni", endpoint: "ocr" },
   // Embeddings retrieval
   "nv-embedqa-1b": { id: "nvidia/llama-3.2-nv-embedqa-1b-v2", category: "embedding", label: "NVIDIA NV-EmbedQA 1B v2", purpose: "embedding ottimizzato Q&A retrieval", dim: 2048 },
 };
+// Modello vision di default per le immagini caricate dall'utente
+const NVIDIA_VISION_MODEL_KEY = process.env.TROVA_NVIDIA_VISION_MODEL || "llama-3.2-vision-11b";
 // Registro modelli Google Gemini / Gemma free tier
 const GEMINI_MODEL_REGISTRY = {
   "gemma-4-27b": { id: "gemma-4-27b-it", category: "chat", label: "Google Gemma 4 27B Instruct", purpose: "open-weight free, alternativa a NVIDIA" },
@@ -354,6 +361,7 @@ async function handleCommand(command, args) {
       modelKey: args.modelKey,
       maxSteps: args.maxSteps,
       includeRag: args.includeRag !== false,
+      images: Array.isArray(args.images) ? args.images : [],
     });
   }
   if (command === "list_chat_threads") {
@@ -402,6 +410,14 @@ async function handleCommand(command, args) {
   }
   if (command === "get_ai_provider_status") {
     return aiProviderStatus();
+  }
+  if (command === "ocr_image_nvidia") {
+    // OCR via NVIDIA: usa il modello vision per estrarre testo da un'immagine (data URL base64)
+    return nvidiaOcrImage(String(args.dataUrl || ""), String(args.instruction || ""));
+  }
+  if (command === "describe_image_nvidia") {
+    // Descrizione/Q&A su immagine via NVIDIA Llama Vision
+    return nvidiaVisionImage(String(args.dataUrl || ""), String(args.question || "Descrivi questa immagine in italiano in dettaglio."));
   }
   if (command === "set_ai_provider") {
     const state = await loadState();
@@ -3575,6 +3591,61 @@ async function aiProviderStatus() {
   };
 }
 
+/**
+ * NVIDIA Vision: manda un'immagine + domanda a Llama 3.2 Vision via NIM chat completions.
+ * dataUrl deve essere `data:image/...;base64,...` (max ~5MB consigliato).
+ */
+async function nvidiaVisionImage(dataUrl, question) {
+  const keys = await discoverNvidiaApiKeys();
+  if (!keys.length) return { error: "Nessuna chiave NVIDIA configurata" };
+  if (!dataUrl || !dataUrl.startsWith("data:image/")) return { error: "dataUrl immagine mancante o non valido" };
+  const modelDef = NVIDIA_MODEL_REGISTRY[NVIDIA_VISION_MODEL_KEY] || NVIDIA_MODEL_REGISTRY["llama-3.2-vision-11b"];
+  const body = {
+    model: modelDef.id,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: question || "Descrivi questa immagine in italiano in dettaglio. Se contiene testo, trascrivilo." },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 1500,
+  };
+  try {
+    const response = await fetch(NVIDIA_CHAT_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${keys[0].key}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return { error: `NVIDIA vision ${response.status}: ${text.slice(0, 200)}` };
+    }
+    const data = await response.json();
+    const answer = data?.choices?.[0]?.message?.content || "";
+    return { ok: true, model: modelDef.id, answer, raw: data };
+  } catch (err) {
+    return { error: String(err?.message || err) };
+  }
+}
+
+/**
+ * NVIDIA OCR: estrazione testo da immagine.
+ * Strategy: prova prima il modello vision con istruzione OCR esplicita (sempre disponibile
+ * con la stessa chiave NVIDIA), in modo da non dipendere da endpoint OCR separati.
+ */
+async function nvidiaOcrImage(dataUrl, instruction) {
+  const question = instruction
+    || "Estrai SOLO il testo visibile in questa immagine, mantenendo paragrafi e punteggiatura, senza commenti aggiuntivi. Se non c'e testo, rispondi 'Nessun testo'.";
+  const result = await nvidiaVisionImage(dataUrl, question);
+  if (result.error) return result;
+  return { ok: true, model: result.model, text: result.answer, source: "nvidia-vision-ocr" };
+}
+
 async function probeOpenAiCompatibleEndpoint(url) {
   try {
     const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(2000) });
@@ -3859,7 +3930,7 @@ async function handleChatStream(req, res) {
   }
 }
 
-async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true } = {}) {
+async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true, images = [] } = {}) {
   if (!Array.isArray(messages) || !messages.length) throw new Error("Nessun messaggio fornito.");
   const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
   if (!lastUserMessage) throw new Error("Nessun messaggio utente.");
@@ -3870,16 +3941,40 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
     : [];
 
   const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
+  // Se ci sono immagini caricate, usa il modello vision NVIDIA forzando il provider+model
+  const validImages = Array.isArray(images) ? images.filter((url) => typeof url === "string" && url.startsWith("data:image/")) : [];
+  const useVision = validImages.length > 0;
+  const resolvedProvider = useVision ? "nvidia" : provider;
+  const resolvedModelKey = useVision ? NVIDIA_VISION_MODEL_KEY : modelKey;
+  // Costruisce i messaggi: l'ultimo user message diventa content array con immagini se vision
   const conversation = [
     { role: "system", content: systemPrompt },
-    ...messages.filter((message) => ["user", "assistant", "tool"].includes(message.role)),
   ];
+  const filteredHistory = messages.filter((message) => ["user", "assistant", "tool"].includes(message.role));
+  if (useVision) {
+    // Aggiungi storico testuale, poi ultimo user con immagini incluse
+    for (let i = 0; i < filteredHistory.length - 1; i += 1) {
+      conversation.push(filteredHistory[i]);
+    }
+    const lastMessage = filteredHistory[filteredHistory.length - 1] || lastUserMessage;
+    conversation.push({
+      role: "user",
+      content: [
+        { type: "text", text: String(lastMessage.content || lastUserMessage.content || "") },
+        ...validImages.map((url) => ({ type: "image_url", image_url: { url } })),
+      ],
+    });
+  } else {
+    conversation.push(...filteredHistory);
+  }
 
-  const tools = agentMode ? CHAT_AGENT_TOOLS : [];
+  // Disabilita gli agenti quando si fa vision (i modelli vision NIM non supportano tool calling)
+  const effectiveAgentMode = agentMode && !useVision;
+  const tools = effectiveAgentMode ? CHAT_AGENT_TOOLS : [];
   const usedTools = [];
   let finalMessage = null;
   for (let step = 0; step < maxSteps; step += 1) {
-    const completion = await aiChatComplete({ messages: conversation, provider, modelKey, tools, maxTokens: 1500, temperature: 0.2 });
+    const completion = await aiChatComplete({ messages: conversation, provider: resolvedProvider, modelKey: resolvedModelKey, tools, maxTokens: 1500, temperature: 0.2 });
     const message = completion.message || {};
     if (!message.tool_calls?.length) {
       finalMessage = message;

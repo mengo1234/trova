@@ -1249,12 +1249,15 @@ function App() {
     }
     setIsLocalAskBusy(true);
     setError("");
-    // Se ci sono file caricati nella search box, includili come contesto per l'AI.
-    // Multi-file: ognuno aggiunge un blocco testo; binari/immagini diventano solo metadata.
+    // File caricati: testo come contesto inline, immagini convertite in data URL base64
+    // per passarle al modello vision NVIDIA Llama 3.2 Vision.
     const filesToInclude = attachedFiles.length ? attachedFiles.map((entry) => entry.file) : (imageQueryFile ? [imageQueryFile] : []);
     let contextNote = "";
-    const perFileBudget = filesToInclude.length > 0 ? Math.floor(16000 / filesToInclude.length) : 0;
-    for (const file of filesToInclude) {
+    const imagesDataUrls: string[] = [];
+    const textFiles = filesToInclude.filter((file) => !file.type.startsWith("image/"));
+    const imageFiles = filesToInclude.filter((file) => file.type.startsWith("image/"));
+    const perFileBudget = textFiles.length > 0 ? Math.floor(16000 / textFiles.length) : 0;
+    for (const file of textFiles) {
       try {
         const name = file.name;
         const isText = /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(name)
@@ -1271,13 +1274,26 @@ function App() {
         contextNote += `\n\nFile caricato dall'utente: ${file.name} (lettura non riuscita: ${shortError(readErr)}).`;
       }
     }
+    // Immagini: leggi come data URL, max 3 (NVIDIA NIM limit pratico), max 4MB ciascuna
+    for (const file of imageFiles.slice(0, 3)) {
+      if (file.size > 4 * 1024 * 1024) {
+        contextNote += `\n\nImmagine ${file.name} troppo grande (${Math.round(file.size / 1024 / 1024)} MB), saltata.`;
+        continue;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        imagesDataUrls.push(dataUrl);
+      } catch (imgErr) {
+        contextNote += `\n\nImmagine ${file.name} non leggibile: ${shortError(imgErr)}.`;
+      }
+    }
     const enrichedQuestion = contextNote ? `${question}${contextNote}` : question;
     const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: enrichedQuestion, createdAt: Date.now() }];
     setChatMessages(nextHistory);
     setLocalQuestion("");
-    // Streaming token-by-token via /api/chat/stream se il provider e remote (NVIDIA/Gemini),
-    // altrimenti fallback al comando non streaming via tauriInvoke.
-    const useStreaming = !agentMode && !aiProviderConfig.agentEnabled; // gli agenti richiedono tool calling sync
+    // Streaming token-by-token via /api/chat/stream se non ci sono immagini/agenti.
+    // Vision NVIDIA e agenti richiedono modalita sync.
+    const useStreaming = imagesDataUrls.length === 0 && !agentMode && !aiProviderConfig.agentEnabled;
     try {
       if (useStreaming) {
         const response = await fetch("http://127.0.0.1:17654/api/chat/stream", {
@@ -1333,13 +1349,14 @@ function App() {
         setChatThreadId(receivedThreadId);
         setLocalAnswer({ answer: assistantBuffer, citations: (citations || []).map((c) => ({ title: c.name || c.filePath?.split("/").pop() || "file", filePath: c.filePath, chunkIndex: 0, score: 0.5, snippet: c.snippet || "" })) });
       } else {
-        // Non-streaming (agent mode)
+        // Non-streaming: agent mode OPPURE vision (immagini caricate)
         const result = await tauriInvoke<{ threadId: string; answer: string; citations?: Array<{ filePath?: string; snippet?: string; name?: string }>; toolsUsed?: Array<{ fn: string; args: Record<string, unknown> }>; provider?: string; modelKey?: string }>("chat_with_workspace", {
           messages: nextHistory.map((message) => ({ role: message.role, content: message.content })),
           threadId: chatThreadId || undefined,
-          agentMode: true,
+          agentMode: imagesDataUrls.length === 0 && (agentMode || aiProviderConfig.agentEnabled),
           provider: aiProviderConfig.provider,
           modelKey: aiProviderConfig.modelKey,
+          images: imagesDataUrls,
         });
         setChatMessages([...nextHistory, { role: "assistant", content: result.answer || "(Nessuna risposta)", citations: result.citations, toolsUsed: result.toolsUsed, createdAt: Date.now() }]);
         setChatThreadId(result.threadId || chatThreadId);
