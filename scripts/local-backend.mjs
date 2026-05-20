@@ -45,10 +45,10 @@ const NVIDIA_MODEL_REGISTRY = {
 };
 // Modello vision di default per le immagini caricate dall'utente
 const NVIDIA_VISION_MODEL_KEY = process.env.TROVA_NVIDIA_VISION_MODEL || "llama-3.2-vision-11b";
-// Registro modelli Google Gemini / Gemma free tier
+// Registro modelli Google Gemini / Gemma free tier (cloud, niente download)
 const GEMINI_MODEL_REGISTRY = {
-  "gemma-4-27b": { id: "gemma-4-27b-it", category: "chat", label: "Google Gemma 4 27B Instruct", purpose: "open-weight free, alternativa a NVIDIA" },
-  "gemini-2.5-flash": { id: "gemini-2.5-flash", category: "chat", label: "Gemini 2.5 Flash", purpose: "chat veloce con contesto enorme" },
+  "gemma-4-27b": { id: "gemma-4-27b-it", category: "vision", label: "Google Gemma 4 27B (multimodale)", purpose: "open-weight free, vede immagini e capisce testo", multimodal: true },
+  "gemini-2.5-flash": { id: "gemini-2.5-flash", category: "vision", label: "Gemini 2.5 Flash", purpose: "chat veloce + vision, contesto enorme", multimodal: true },
   "gemini-embedding-2": { id: "models/gemini-embedding-2", category: "embedding", label: "Gemini Embedding 2", purpose: "embedding multilingua di Google" },
 };
 const TROVA_CHAT_PROVIDER = process.env.TROVA_CHAT_PROVIDER || "auto"; // auto|nvidia|gemma|gemini|ollama|lmstudio
@@ -99,6 +99,16 @@ await fs.mkdir(REMOTE_DIR, { recursive: true });
 await fs.mkdir(BIN_DIR, { recursive: true });
 await fs.mkdir(RUNTIME_DIR, { recursive: true });
 await fs.mkdir(AI_SUMMARY_DIR, { recursive: true });
+
+// Carica la chiave Gemini salvata in state, cosi e disponibile per discoverApiKeys
+try {
+  const initialState = JSON.parse(await fs.readFile(STATE_PATH, "utf8"));
+  if (initialState?.geminiApiKey && !process.env.GEMINI_API_KEY) {
+    process.env.GEMINI_API_KEY = String(initialState.geminiApiKey).trim();
+  }
+} catch {
+  // nessuno stato salvato ancora
+}
 
 let activeWatcher = null;
 let watcherDebounceTimer = null;
@@ -462,6 +472,24 @@ async function handleCommand(command, args) {
   }
   if (command === "get_ai_provider_status") {
     return aiProviderStatus();
+  }
+  if (command === "set_gemini_api_key") {
+    // Salva la chiave Gemini nello state cosi viene rilevata da discoverApiKeys
+    const state = await loadState();
+    const key = String(args.apiKey || "").trim();
+    if (!key) throw new Error("Chiave Gemini vuota");
+    state.geminiApiKey = key;
+    await saveState(state);
+    // Imposta anche env per la sessione corrente
+    process.env.GEMINI_API_KEY = key;
+    return { ok: true };
+  }
+  if (command === "clear_gemini_api_key") {
+    const state = await loadState();
+    delete state.geminiApiKey;
+    await saveState(state);
+    delete process.env.GEMINI_API_KEY;
+    return { ok: true };
   }
   if (command === "ocr_image_nvidia") {
     // OCR via NVIDIA: usa il modello vision per estrarre testo da un'immagine (data URL base64)
@@ -4020,11 +4048,33 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
   }
 
   const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
-  // Se ci sono immagini caricate, usa il modello vision NVIDIA forzando il provider+model
+  // Se ci sono immagini caricate, scegli automaticamente un modello multimodale
   const validImages = Array.isArray(images) ? images.filter((url) => typeof url === "string" && url.startsWith("data:image/")) : [];
   const useVision = validImages.length > 0;
-  const resolvedProvider = useVision ? "nvidia" : provider;
-  const resolvedModelKey = useVision ? NVIDIA_VISION_MODEL_KEY : modelKey;
+  let resolvedProvider = provider;
+  let resolvedModelKey = modelKey;
+  if (useVision) {
+    // Priorita: provider scelto se multimodale > NVIDIA Vision > Gemma 4
+    const userProviderHasVision = (provider === "nvidia" && (modelKey === "llama-3.2-vision-90b" || modelKey === "llama-3.2-vision-11b"))
+      || (provider === "gemini" && (modelKey === "gemma-4-27b" || modelKey === "gemini-2.5-flash"));
+    if (userProviderHasVision) {
+      // Mantieni la scelta utente
+    } else {
+      const nvidiaKeys = await discoverNvidiaApiKeys();
+      const geminiKey = normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY);
+      if (provider === "gemini" && geminiKey) {
+        resolvedProvider = "gemini";
+        resolvedModelKey = "gemma-4-27b";
+      } else if (nvidiaKeys.length > 0) {
+        resolvedProvider = "nvidia";
+        resolvedModelKey = NVIDIA_VISION_MODEL_KEY;
+      } else if (geminiKey) {
+        resolvedProvider = "gemini";
+        resolvedModelKey = "gemma-4-27b";
+      }
+      // se nessuno e disponibile, lascia la scelta originale (errore arrivera al provider)
+    }
+  }
   // Costruisce i messaggi: l'ultimo user message diventa content array con immagini se vision
   const conversation = [
     { role: "system", content: systemPrompt },

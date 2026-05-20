@@ -3753,7 +3753,40 @@ function SettingsPanel({
                 <span>Sceglie il provider che risponde quando chiedi qualcosa nella ricerca.</span>
               </div>
             </div>
-            <p className="settings-help-text">Auto sceglie il primo provider disponibile (NVIDIA &gt; Ollama &gt; LM Studio &gt; Gemini). Puoi forzare un provider o usare un modello locale 100% offline.</p>
+            <p className="settings-help-text">
+              <strong>Niente da scaricare per i cloud free:</strong> NVIDIA e Google rispondono via API, gratis nei loro free tier. NVIDIA Nemotron 49B + Llama 3.2 Vision e Gemma 4 27B multimodale (vede immagini) sono attivi senza download.
+              <br />Solo Ollama / LM Studio sono modelli che girano interamente offline sul tuo PC e richiedono il download dei pesi (10-50GB) attraverso la loro app.
+            </p>
+            {!aiProviderStatus?.providers?.find((p) => p.id === "gemini" && p.configured) && (
+              <div className="ai-gemini-callout">
+                <div>
+                  <strong>Vuoi anche Gemma 4 (Google)?</strong>
+                  <span>Apri il link, clicca "Get API Key" e incolla la chiave qui sotto. Gratis, niente download.</span>
+                </div>
+                <button type="button" className="settings-link-button" onClick={() => window.open("https://aistudio.google.com/apikey", "_blank")}>
+                  Apri Google AI Studio
+                </button>
+                <div className="ai-gemini-key-row">
+                  <input
+                    type="password"
+                    placeholder="Incolla qui la chiave Gemini (inizia con AIza...)"
+                    onKeyDown={async (event) => {
+                      if (event.key === "Enter") {
+                        const value = event.currentTarget.value.trim();
+                        if (value) {
+                          await safeInvoke<{ ok: boolean }>("set_gemini_api_key", { apiKey: value }, { ok: false });
+                          event.currentTarget.value = "";
+                          // Reload provider status
+                          const next = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
+                          if (next) setAiProviderStatus(next);
+                        }
+                      }
+                    }}
+                  />
+                  <span className="ai-gemini-hint">Premi Invio per salvare</span>
+                </div>
+              </div>
+            )}
             <div className="ai-provider-grid">
               {(aiProviderStatus?.providers || []).map((provider) => (
                 <div

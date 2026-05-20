@@ -5252,6 +5252,49 @@ button:active {
   background: linear-gradient(145deg, rgba(245, 240, 255, 0.7), rgba(255, 255, 255, 0.85));
 }
 
+.ai-gemini-callout {
+  margin: 12px 0;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(66, 133, 244, 0.36);
+  background: linear-gradient(135deg, rgba(66, 133, 244, 0.08), rgba(52, 168, 83, 0.08));
+  display: grid;
+  gap: 10px;
+}
+.ai-gemini-callout > div:first-child { display: grid; gap: 4px; }
+.ai-gemini-callout strong { color: #1a73e8; font-size: 14px; }
+.ai-gemini-callout span { color: #3c4043; font-size: 12.5px; }
+.settings-link-button {
+  align-self: start;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(66, 133, 244, 0.5);
+  background: rgba(255, 255, 255, 0.9);
+  color: #1a73e8;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-link-button:hover { background: rgba(66, 133, 244, 0.10); }
+.ai-gemini-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ai-gemini-key-row input {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(60, 80, 130, 0.3);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.ai-gemini-hint {
+  font-size: 11px;
+  color: #5f6368;
+  font-style: italic;
+}
+
 .ai-provider-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
