@@ -385,6 +385,58 @@ async function handleCommand(command, args) {
     await saveState(state);
     return { ok: true };
   }
+  if (command === "list_pinned_documents") {
+    const state = await loadState();
+    const pinned = Array.isArray(state.pinnedDocuments) ? state.pinnedDocuments : [];
+    // Arricchisci con metadata se il file e indicizzato
+    const index = state.index || [];
+    return pinned.map((filePath) => {
+      const entry = index.find((item) => item.filePath === filePath);
+      return {
+        filePath,
+        name: entry?.name || filePath.split(/[\\/]/).pop() || filePath,
+        kind: entry?.kind || "document",
+        indexed: Boolean(entry),
+      };
+    });
+  }
+  if (command === "pin_document") {
+    const state = await loadState();
+    const filePath = String(args.filePath || "").trim();
+    if (!filePath) throw new Error("filePath richiesto");
+    state.pinnedDocuments = Array.from(new Set([...(state.pinnedDocuments || []), filePath])).slice(-20);
+    await saveState(state);
+    return { ok: true, pinned: state.pinnedDocuments };
+  }
+  if (command === "unpin_document") {
+    const state = await loadState();
+    const filePath = String(args.filePath || "").trim();
+    state.pinnedDocuments = (state.pinnedDocuments || []).filter((path) => path !== filePath);
+    await saveState(state);
+    return { ok: true, pinned: state.pinnedDocuments };
+  }
+  if (command === "search_files_for_mention") {
+    // Autocomplete file per @mention nel chat input
+    const state = await loadState();
+    const queryText = String(args.query || "").trim().toLowerCase();
+    const limit = Math.min(20, Math.max(1, Number(args.limit) || 8));
+    const index = state.index || [];
+    const matches = [];
+    for (const entry of index) {
+      const name = (entry.name || "").toLowerCase();
+      const path = (entry.filePath || "").toLowerCase();
+      if (queryText && !name.includes(queryText) && !path.includes(queryText)) continue;
+      matches.push({
+        filePath: entry.filePath,
+        name: entry.name,
+        kind: entry.kind,
+        extension: entry.extension,
+        snippet: (entry.content || "").slice(0, 120),
+      });
+      if (matches.length >= limit) break;
+    }
+    return matches;
+  }
   if (command === "export_chat_thread") {
     const state = await loadState();
     const messages = state.chatThreads?.[args.threadId] || [];
@@ -3936,9 +3988,36 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
   if (!lastUserMessage) throw new Error("Nessun messaggio utente.");
 
   const state = await loadState();
-  const ragSnippets = includeRag
+  // RAG: prima i pinati (sempre inclusi), poi i top match della query
+  const pinnedPaths = Array.isArray(state.pinnedDocuments) ? state.pinnedDocuments : [];
+  const pinnedSnippets = pinnedPaths.length
+    ? (state.index || [])
+      .filter((entry) => pinnedPaths.includes(entry.filePath))
+      .map((entry) => ({ filePath: entry.filePath, name: entry.name, score: 1.5, snippet: (entry.content || "").slice(0, 600), pinned: true }))
+    : [];
+  // Estrai anche le @mention dal messaggio user
+  const mentionedPaths = extractMentionedFilePaths(lastUserMessage.content, state.index || []);
+  const mentionedSnippets = mentionedPaths
+    .filter((path) => !pinnedPaths.includes(path))
+    .map((path) => {
+      const entry = (state.index || []).find((item) => item.filePath === path);
+      return entry
+        ? { filePath: entry.filePath, name: entry.name, score: 1.4, snippet: (entry.content || "").slice(0, 600), mentioned: true }
+        : null;
+    })
+    .filter(Boolean);
+  const queryRagSnippets = includeRag
     ? await retrieveRagContext(state.index || [], lastUserMessage.content, 6)
     : [];
+  // Dedup: pinati > mentions > top-k query
+  const seen = new Set();
+  const ragSnippets = [];
+  for (const snippet of [...pinnedSnippets, ...mentionedSnippets, ...queryRagSnippets]) {
+    if (!snippet || seen.has(snippet.filePath)) continue;
+    seen.add(snippet.filePath);
+    ragSnippets.push(snippet);
+    if (ragSnippets.length >= 10) break;
+  }
 
   const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
   // Se ci sono immagini caricate, usa il modello vision NVIDIA forzando il provider+model
@@ -4030,6 +4109,28 @@ function buildChatSystemPrompt({ ragSnippets, agentMode }) {
     agentBlock,
     ragBlock,
   ].join("\n\n");
+}
+
+/**
+ * Estrae i path dei file menzionati con @nomefile o @"nome con spazi" nel testo utente.
+ * Cerca match esatti sui nomi file nell'indice; ritorna i path corrispondenti.
+ */
+function extractMentionedFilePaths(text, index) {
+  const matches = [];
+  const re = /@(?:"([^"]+)"|(\S+))/g;
+  let match;
+  while ((match = re.exec(text || "")) !== null) {
+    const needle = (match[1] || match[2] || "").toLowerCase().trim();
+    if (!needle) continue;
+    for (const entry of index) {
+      const name = (entry.name || "").toLowerCase();
+      if (name === needle || name.startsWith(needle) || needle.includes(name) || name.includes(needle)) {
+        matches.push(entry.filePath);
+        break;
+      }
+    }
+  }
+  return Array.from(new Set(matches));
 }
 
 async function retrieveRagContext(index, query, limit = 6) {

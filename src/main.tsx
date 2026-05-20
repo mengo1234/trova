@@ -617,6 +617,13 @@ function App() {
   const [agentMode, setAgentMode] = useState<boolean>(false);
   const [chatThreadsList, setChatThreadsList] = useState<Array<{ id: string; title: string; messageCount: number; lastMessageAt: number }>>([]);
   const [showThreadHistory, setShowThreadHistory] = useState<boolean>(false);
+  // Pin documents + @mention autocomplete
+  type PinnedDoc = { filePath: string; name: string; kind?: string; indexed?: boolean };
+  const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDoc[]>([]);
+  type MentionSuggestion = { filePath: string; name: string; kind?: string; extension?: string; snippet?: string };
+  const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string>("");
+  const [showMentionDropdown, setShowMentionDropdown] = useState<boolean>(false);
   const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
   const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false });
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
@@ -737,6 +744,7 @@ function App() {
     ]);
     if (aiProvStatus) setAiProviderStatus(aiProvStatus);
     if (aiProvConfig) setAiProviderConfig({ provider: aiProvConfig.provider || "auto", modelKey: aiProvConfig.modelKey || "nemotron-super-49b", agentEnabled: Boolean(aiProvConfig.agentEnabled) });
+    void loadPinnedDocuments();
     setWatchPaths(paths.length ? paths : fallbackWatchPaths);
     setStatus(indexStatus);
     setLocalVisionStatus(visionStatus);
@@ -1405,6 +1413,46 @@ function App() {
     await loadChatThreadsList();
   }
 
+  async function loadPinnedDocuments() {
+    const list = await safeInvoke<PinnedDoc[]>("list_pinned_documents", {}, []);
+    setPinnedDocuments(list || []);
+  }
+
+  async function pinDocument(filePath: string) {
+    if (!filePath) return;
+    await safeInvoke<{ ok: boolean; pinned: string[] }>("pin_document", { filePath }, { ok: false, pinned: [] });
+    await loadPinnedDocuments();
+  }
+
+  async function unpinDocument(filePath: string) {
+    await safeInvoke<{ ok: boolean; pinned: string[] }>("unpin_document", { filePath }, { ok: false, pinned: [] });
+    await loadPinnedDocuments();
+  }
+
+  async function updateMentionSuggestions(text: string, caret: number) {
+    // Trova un @qualcosa che termina al cursore o stiamo digitando
+    const before = text.slice(0, caret);
+    const match = before.match(/@(\S*)$/);
+    if (!match) {
+      setShowMentionDropdown(false);
+      return;
+    }
+    const partial = match[1];
+    setMentionQuery(partial);
+    const list = await safeInvoke<MentionSuggestion[]>("search_files_for_mention", { query: partial, limit: 8 }, []);
+    setMentionSuggestions(list || []);
+    setShowMentionDropdown((list || []).length > 0);
+  }
+
+  function applyMention(suggestion: MentionSuggestion) {
+    // Sostituisce @parziale con @nome del file selezionato
+    const current = localQuestion;
+    const re = /@(\S*)$/;
+    const next = current.replace(re, `@${suggestion.name.includes(" ") ? `"${suggestion.name}"` : suggestion.name} `);
+    setLocalQuestion(next);
+    setShowMentionDropdown(false);
+  }
+
   async function exportChatThread(format: "markdown" | "json" = "markdown") {
     if (!chatThreadId) {
       setError("Nessuna conversazione da esportare.");
@@ -2043,6 +2091,13 @@ function App() {
               onCloseHistory={() => setShowThreadHistory(false)}
               onPickThread={loadChatThread}
               onDeleteThread={deleteChatThreadAt}
+              pinnedDocuments={pinnedDocuments}
+              onUnpinDocument={unpinDocument}
+              onPinFromCitation={(filePath) => void pinDocument(filePath)}
+              mentionSuggestions={mentionSuggestions}
+              showMentionDropdown={showMentionDropdown}
+              onQuestionChangeWithCaret={(value, caret) => { setLocalQuestion(value); void updateMentionSuggestions(value, caret); }}
+              onPickMention={applyMention}
             />
           )}
 
@@ -4172,6 +4227,13 @@ function LocalAskPanel({
   onCloseHistory,
   onPickThread,
   onDeleteThread,
+  pinnedDocuments = [],
+  onUnpinDocument,
+  onPinFromCitation,
+  mentionSuggestions = [],
+  showMentionDropdown = false,
+  onQuestionChangeWithCaret,
+  onPickMention,
 }: {
   question: string;
   query: string;
@@ -4195,6 +4257,13 @@ function LocalAskPanel({
   onCloseHistory?: () => void;
   onPickThread?: (threadId: string) => void;
   onDeleteThread?: (threadId: string) => void;
+  pinnedDocuments?: Array<{ filePath: string; name: string; kind?: string; indexed?: boolean }>;
+  onUnpinDocument?: (filePath: string) => void;
+  onPinFromCitation?: (filePath: string) => void;
+  mentionSuggestions?: Array<{ filePath: string; name: string; kind?: string; extension?: string; snippet?: string }>;
+  showMentionDropdown?: boolean;
+  onQuestionChangeWithCaret?: (value: string, caret: number) => void;
+  onPickMention?: (suggestion: { filePath: string; name: string; kind?: string; extension?: string; snippet?: string }) => void;
 }) {
   const semanticLabel = semanticStatus?.ready
     ? `${semanticStatus.embeddedChunks.toLocaleString("it-IT")} pezzi pronti`
@@ -4286,9 +4355,16 @@ function LocalAskPanel({
               {message.role === "assistant" && message.citations && message.citations.length > 0 && (
                 <div className="local-citations">
                   {message.citations.slice(0, 5).map((citation, i) => (
-                    <span key={`${citation.filePath || citation.name || i}-${i}`}>
-                      {i + 1}. {citation.name || citation.filePath?.split("/").pop() || "file"}
-                      {citation.snippet ? ` · ${citation.snippet.slice(0, 80)}${citation.snippet.length > 80 ? "..." : ""}` : ""}
+                    <span key={`${citation.filePath || citation.name || i}-${i}`} className="local-citation-row">
+                      <span>
+                        {i + 1}. {citation.name || citation.filePath?.split("/").pop() || "file"}
+                        {citation.snippet ? ` · ${citation.snippet.slice(0, 80)}${citation.snippet.length > 80 ? "..." : ""}` : ""}
+                      </span>
+                      {citation.filePath && onPinFromCitation && !pinnedDocuments.some((d) => d.filePath === citation.filePath) && (
+                        <button type="button" className="local-citation-pin" onClick={() => onPinFromCitation(citation.filePath!)} title="Fissa questo file nel contesto AI">
+                          📌
+                        </button>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -4304,14 +4380,36 @@ function LocalAskPanel({
         </div>
       )}
 
-      <div className="local-ask-row">
+      {pinnedDocuments.length > 0 && (
+        <div className="local-pinned-row" role="status" aria-label="Documenti fissati">
+          <span className="local-pinned-label">📌 Fissati nel contesto:</span>
+          {pinnedDocuments.map((doc) => (
+            <span key={doc.filePath} className="local-pinned-chip" title={doc.filePath}>
+              {doc.name}
+              <button type="button" onClick={() => onUnpinDocument?.(doc.filePath)} aria-label={`Rimuovi ${doc.name}`}>
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="local-ask-row" style={{ position: "relative" }}>
         <input
           value={question}
-          onChange={(event) => onQuestionChange(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") onAsk();
+          onChange={(event) => {
+            const value = event.currentTarget.value;
+            const caret = event.currentTarget.selectionStart || value.length;
+            if (onQuestionChangeWithCaret) onQuestionChangeWithCaret(value, caret);
+            else onQuestionChange(value);
           }}
-          placeholder={hasChat ? "Continua la conversazione..." : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti"}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !showMentionDropdown) onAsk();
+            if (event.key === "Escape") {
+              // Chiudi dropdown mention con esc
+            }
+          }}
+          placeholder={hasChat ? "Continua la conversazione... (usa @nome per riferirti a un file)" : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti (digita @ per menzionare un file)"}
         />
         <button onClick={onAsk} disabled={busy}>
           <GeneratedIcon name="search" size={18} />
@@ -4321,6 +4419,23 @@ function LocalAskPanel({
           <GeneratedIcon name="sparkle" size={18} />
           <span>Simili</span>
         </button>
+        {showMentionDropdown && mentionSuggestions.length > 0 && (
+          <div className="local-mention-dropdown" role="listbox">
+            {mentionSuggestions.map((suggestion) => (
+              <button
+                key={suggestion.filePath}
+                type="button"
+                role="option"
+                aria-selected="false"
+                onClick={() => onPickMention?.(suggestion)}
+              >
+                <strong>{suggestion.name}</strong>
+                {suggestion.kind ? <em>{suggestion.kind}</em> : null}
+                {suggestion.snippet ? <small>{suggestion.snippet.slice(0, 80)}{suggestion.snippet.length > 80 ? "..." : ""}</small> : null}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {fallbackAnswer && (
