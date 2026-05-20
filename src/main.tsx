@@ -625,7 +625,10 @@ function App() {
   const [mentionQuery, setMentionQuery] = useState<string>("");
   const [showMentionDropdown, setShowMentionDropdown] = useState<boolean>(false);
   const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
-  const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false });
+  const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean; systemPrompt?: string; temperature?: number; maxTokens?: number; ragDepth?: number }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false, systemPrompt: "", temperature: 0.2, maxTokens: 1500, ragDepth: 6 });
+  // Voce: stato sintesi e riconoscimento
+  const [isListening, setIsListening] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ollamaInstall, setOllamaInstall] = useState<{ label: string; progress: number; detail?: string; running: boolean } | null>(null);
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
   const [localVisionStatus, setLocalVisionStatus] = useState<LocalVisionStatus | null>(null);
@@ -1277,7 +1280,8 @@ function App() {
   }
 
   async function askLocalFiles() {
-    const question = (localQuestion.trim() || query.trim()).trim();
+    const rawQuestion = (localQuestion.trim() || query.trim()).trim();
+    const question = expandSlashCommand(rawQuestion);
     if (!question) {
       setError("Scrivi una domanda o una query prima di chiedere ai file.");
       return;
@@ -1340,6 +1344,10 @@ function App() {
             provider: aiProviderConfig.provider,
             modelKey: aiProviderConfig.modelKey,
             includeRag: true,
+            systemPromptExtra: aiProviderConfig.systemPrompt || "",
+            temperature: aiProviderConfig.temperature,
+            maxTokens: aiProviderConfig.maxTokens,
+            ragDepth: aiProviderConfig.ragDepth,
           }),
         });
         if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
@@ -1392,6 +1400,10 @@ function App() {
           provider: aiProviderConfig.provider,
           modelKey: aiProviderConfig.modelKey,
           images: imagesDataUrls,
+          systemPromptExtra: aiProviderConfig.systemPrompt || "",
+          temperature: aiProviderConfig.temperature,
+          maxTokens: aiProviderConfig.maxTokens,
+          ragDepth: aiProviderConfig.ragDepth,
         });
         setChatMessages([...nextHistory, { role: "assistant", content: result.answer || "(Nessuna risposta)", citations: result.citations, toolsUsed: result.toolsUsed, createdAt: Date.now() }]);
         setChatThreadId(result.threadId || chatThreadId);
@@ -1418,6 +1430,74 @@ function App() {
     setChatMessages([]);
     setChatThreadId("");
     setLocalAnswer(null);
+  }
+
+  // --- VOCE: TTS (legge risposte) ---
+  function speakText(text: string, index: number) {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      setError("La sintesi vocale non e disponibile in questo ambiente.");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    if (speakingIndex === index) {
+      setSpeakingIndex(null);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "it-IT";
+    utterance.onend = () => setSpeakingIndex(null);
+    utterance.onerror = () => setSpeakingIndex(null);
+    setSpeakingIndex(index);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  // --- VOCE: STT (dettatura microfono) ---
+  const recognitionRef = useRef<any>(null);
+  function toggleDictation() {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("Il riconoscimento vocale non e disponibile in questo browser/app.");
+      return;
+    }
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = "it-IT";
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    recognition.onresult = (event: any) => {
+      let transcript = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        transcript += event.results[i][0].transcript;
+      }
+      setLocalQuestion(transcript);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    recognitionRef.current = recognition;
+    setIsListening(true);
+    recognition.start();
+  }
+
+  // --- Slash commands ---
+  const SLASH_COMMANDS: Record<string, string> = {
+    "/riassumi": "Riassumi in modo chiaro e conciso: ",
+    "/traduci": "Traduci in italiano (o in inglese se gia italiano): ",
+    "/spiega": "Spiega in modo semplice, come a un principiante: ",
+    "/correggi": "Correggi errori e migliora questo testo: ",
+    "/elenca": "Fai un elenco puntato dei punti principali di: ",
+  };
+  function expandSlashCommand(text: string): string {
+    const trimmed = text.trimStart();
+    for (const [cmd, prefix] of Object.entries(SLASH_COMMANDS)) {
+      if (trimmed.toLowerCase().startsWith(cmd + " ") || trimmed.toLowerCase() === cmd) {
+        return prefix + trimmed.slice(cmd.length).trim();
+      }
+    }
+    return text;
   }
 
   async function loadChatThreadsList() {
@@ -2125,6 +2205,11 @@ function App() {
               showMentionDropdown={showMentionDropdown}
               onQuestionChangeWithCaret={(value, caret) => { setLocalQuestion(value); void updateMentionSuggestions(value, caret); }}
               onPickMention={applyMention}
+              onSpeak={speakText}
+              speakingIndex={speakingIndex}
+              onToggleDictation={toggleDictation}
+              isListening={isListening}
+              onOpenCitation={(filePath) => { if (filePath) void safeInvoke("open_in_folder", { path: filePath }, null); }}
             />
           )}
 
@@ -3894,6 +3979,38 @@ function SettingsPanel({
               />
               Permetti agli agenti AI di cercare sul web e leggere link
             </label>
+
+            <div className="ai-advanced-config">
+              <label className="ai-config-field">
+                <span>Istruzioni personalizzate per l'AI (system prompt)</span>
+                <textarea
+                  rows={2}
+                  placeholder="Es: Rispondi sempre in modo formale e conciso. Sei un assistente legale."
+                  defaultValue={aiProviderConfig.systemPrompt || ""}
+                  onBlur={(event) => onSaveAiProvider({ ...aiProviderConfig, systemPrompt: event.currentTarget.value })}
+                />
+              </label>
+              <div className="ai-config-sliders">
+                <label>
+                  <span>Creativita (temperatura): {(aiProviderConfig.temperature ?? 0.2).toFixed(1)}</span>
+                  <input type="range" min={0} max={1} step={0.1} value={aiProviderConfig.temperature ?? 0.2}
+                    onChange={(event) => onSaveAiProvider({ ...aiProviderConfig, temperature: Number(event.currentTarget.value) })} />
+                </label>
+                <label>
+                  <span>Lunghezza max risposta: {aiProviderConfig.maxTokens ?? 1500} token</span>
+                  <input type="range" min={256} max={4096} step={256} value={aiProviderConfig.maxTokens ?? 1500}
+                    onChange={(event) => onSaveAiProvider({ ...aiProviderConfig, maxTokens: Number(event.currentTarget.value) })} />
+                </label>
+                <label>
+                  <span>File nel contesto: {aiProviderConfig.ragDepth ?? 6}</span>
+                  <input type="range" min={3} max={12} step={1} value={aiProviderConfig.ragDepth ?? 6}
+                    onChange={(event) => onSaveAiProvider({ ...aiProviderConfig, ragDepth: Number(event.currentTarget.value) })} />
+                </label>
+              </div>
+              <p className="settings-help-text" style={{ marginTop: 6 }}>
+                Scorciatoie chat: <code>/riassumi</code> <code>/traduci</code> <code>/spiega</code> <code>/correggi</code> <code>/elenca</code> — scrivile prima del testo per applicarle al volo.
+              </p>
+            </div>
             <p className="settings-help-text">Con gli agenti attivi, l'AI puo decidere autonomamente di fare ricerche web (DuckDuckGo), aprire URL e calcolare numeri. I tuoi file restano locali — solo le query e gli URL escono.</p>
           </section>
         </div>
@@ -4319,6 +4436,11 @@ function LocalAskPanel({
   showMentionDropdown = false,
   onQuestionChangeWithCaret,
   onPickMention,
+  onSpeak,
+  speakingIndex = null,
+  onToggleDictation,
+  isListening = false,
+  onOpenCitation,
 }: {
   question: string;
   query: string;
@@ -4349,6 +4471,11 @@ function LocalAskPanel({
   showMentionDropdown?: boolean;
   onQuestionChangeWithCaret?: (value: string, caret: number) => void;
   onPickMention?: (suggestion: { filePath: string; name: string; kind?: string; extension?: string; snippet?: string }) => void;
+  onSpeak?: (text: string, index: number) => void;
+  speakingIndex?: number | null;
+  onToggleDictation?: () => void;
+  isListening?: boolean;
+  onOpenCitation?: (filePath: string) => void;
 }) {
   const semanticLabel = semanticStatus?.ready
     ? `${semanticStatus.embeddedChunks.toLocaleString("it-IT")} pezzi pronti`
@@ -4435,13 +4562,27 @@ function LocalAskPanel({
                 {message.role === "assistant" && message.toolsUsed?.length ? (
                   <span className="local-chat-tools">· tool: {message.toolsUsed.map((tool) => tool.fn).join(", ")}</span>
                 ) : null}
+                {message.role === "assistant" && message.content && onSpeak && (
+                  <button
+                    type="button"
+                    className={`local-chat-speak ${speakingIndex === index ? "active" : ""}`}
+                    onClick={() => onSpeak(message.content, index)}
+                    title={speakingIndex === index ? "Ferma lettura" : "Leggi ad alta voce"}
+                  >
+                    {speakingIndex === index ? <Square size={13} /> : <Play size={13} />}
+                  </button>
+                )}
               </div>
               <div className="local-chat-bubble"><pre>{message.content}</pre></div>
               {message.role === "assistant" && message.citations && message.citations.length > 0 && (
                 <div className="local-citations">
                   {message.citations.slice(0, 5).map((citation, i) => (
                     <span key={`${citation.filePath || citation.name || i}-${i}`} className="local-citation-row">
-                      <span>
+                      <span
+                        className={citation.filePath && onOpenCitation ? "local-citation-link" : ""}
+                        onClick={() => { if (citation.filePath && onOpenCitation) onOpenCitation(citation.filePath); }}
+                        title={citation.filePath ? `Apri ${citation.filePath}` : undefined}
+                      >
                         {i + 1}. {citation.name || citation.filePath?.split("/").pop() || "file"}
                         {citation.snippet ? ` · ${citation.snippet.slice(0, 80)}${citation.snippet.length > 80 ? "..." : ""}` : ""}
                       </span>
@@ -4496,6 +4637,11 @@ function LocalAskPanel({
           }}
           placeholder={hasChat ? "Continua la conversazione... (usa @nome per riferirti a un file)" : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti (digita @ per menzionare un file)"}
         />
+        {onToggleDictation && (
+          <button onClick={onToggleDictation} className={`local-mic-button ${isListening ? "listening" : ""}`} title={isListening ? "Ferma dettatura" : "Detta con il microfono"} type="button">
+            <Mic size={18} />
+          </button>
+        )}
         <button onClick={onAsk} disabled={busy}>
           <GeneratedIcon name="search" size={18} />
           <span>{busy ? "Cerco..." : "Chiedi"}</span>

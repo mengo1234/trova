@@ -372,6 +372,10 @@ async function handleCommand(command, args) {
       maxSteps: args.maxSteps,
       includeRag: args.includeRag !== false,
       images: Array.isArray(args.images) ? args.images : [],
+      systemPromptExtra: args.systemPromptExtra,
+      temperature: args.temperature,
+      maxTokens: args.maxTokens,
+      ragDepth: args.ragDepth,
     });
   }
   if (command === "list_chat_threads") {
@@ -514,13 +518,17 @@ async function handleCommand(command, args) {
       provider: String(args.provider || "auto"),
       modelKey: String(args.modelKey || ""),
       agentEnabled: Boolean(args.agentEnabled),
+      systemPrompt: typeof args.systemPrompt === "string" ? args.systemPrompt : (state.aiProviderConfig?.systemPrompt || ""),
+      temperature: typeof args.temperature === "number" ? args.temperature : (state.aiProviderConfig?.temperature ?? 0.2),
+      maxTokens: typeof args.maxTokens === "number" ? args.maxTokens : (state.aiProviderConfig?.maxTokens ?? 1500),
+      ragDepth: typeof args.ragDepth === "number" ? args.ragDepth : (state.aiProviderConfig?.ragDepth ?? 6),
     };
     await saveState(state);
     return { ok: true, config: state.aiProviderConfig };
   }
   if (command === "get_ai_provider_config") {
     const state = await loadState();
-    return state.aiProviderConfig || { provider: "auto", modelKey: TROVA_CHAT_MODEL_KEY, agentEnabled: false };
+    return state.aiProviderConfig || { provider: "auto", modelKey: TROVA_CHAT_MODEL_KEY, agentEnabled: false, systemPrompt: "", temperature: 0.2, maxTokens: 1500, ragDepth: 6 };
   }
   if (command === "get_file_context") {
     const state = await loadState();
@@ -4019,7 +4027,7 @@ async function handleChatStream(req, res) {
   }
 }
 
-async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true, images = [] } = {}) {
+async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true, images = [], systemPromptExtra = "", temperature, maxTokens, ragDepth } = {}) {
   if (!Array.isArray(messages) || !messages.length) throw new Error("Nessun messaggio fornito.");
   const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
   if (!lastUserMessage) throw new Error("Nessun messaggio utente.");
@@ -4043,8 +4051,9 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
         : null;
     })
     .filter(Boolean);
+  const ragLimit = Math.max(3, Math.min(12, Number(ragDepth) || 6));
   const queryRagSnippets = includeRag
-    ? await retrieveRagContext(state.index || [], lastUserMessage.content, 6)
+    ? await retrieveRagContext(state.index || [], lastUserMessage.content, ragLimit)
     : [];
   // Dedup: pinati > mentions > top-k query
   const seen = new Set();
@@ -4056,7 +4065,10 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
     if (ragSnippets.length >= 10) break;
   }
 
-  const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
+  let systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
+  if (systemPromptExtra && String(systemPromptExtra).trim()) {
+    systemPrompt += `\n\nIstruzioni aggiuntive dell'utente (rispettale sempre):\n${String(systemPromptExtra).trim()}`;
+  }
   // Se ci sono immagini caricate, scegli automaticamente un modello multimodale
   const validImages = Array.isArray(images) ? images.filter((url) => typeof url === "string" && url.startsWith("data:image/")) : [];
   const useVision = validImages.length > 0;
@@ -4111,8 +4123,10 @@ async function chatWithWorkspace({ messages = [], threadId, agentMode = false, p
   const tools = effectiveAgentMode ? CHAT_AGENT_TOOLS : [];
   const usedTools = [];
   let finalMessage = null;
+  const effectiveTemp = typeof temperature === "number" ? Math.max(0, Math.min(1, temperature)) : 0.2;
+  const effectiveMaxTokens = typeof maxTokens === "number" ? Math.max(256, Math.min(4096, maxTokens)) : 1500;
   for (let step = 0; step < maxSteps; step += 1) {
-    const completion = await aiChatComplete({ messages: conversation, provider: resolvedProvider, modelKey: resolvedModelKey, tools, maxTokens: 1500, temperature: 0.2 });
+    const completion = await aiChatComplete({ messages: conversation, provider: resolvedProvider, modelKey: resolvedModelKey, tools, maxTokens: effectiveMaxTokens, temperature: effectiveTemp });
     const message = completion.message || {};
     if (!message.tool_calls?.length) {
       finalMessage = message;
