@@ -38,8 +38,10 @@ import {
   Settings,
   ShieldCheck,
   Square,
+  Moon,
   Sparkles,
   Star,
+  Sun,
   UserRound,
   Video,
   Wrench,
@@ -664,6 +666,45 @@ function App() {
   const [isGeminiBusy, setIsGeminiBusy] = useState(false);
   const geminiFileInput = useRef<HTMLInputElement | null>(null);
   const imageQueryInput = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [darkMode, setDarkMode] = useState<boolean>(() => window.localStorage.getItem("trova.theme") === "dark");
+
+  // Applica tema scuro
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    window.localStorage.setItem("trova.theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  // Scorciatoie tastiera globali
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      // "/" focalizza la ricerca (se non sto gia scrivendo)
+      if (event.key === "/" && !typing) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      // Esc chiude settings o pulisce
+      if (event.key === "Escape") {
+        if (showSettings) setShowSettings(false);
+      }
+      // Ctrl/Cmd+K: nuova conversazione
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        startNewChatThread();
+        searchInputRef.current?.focus();
+      }
+      // Ctrl/Cmd+D: toggle dark mode
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        setDarkMode((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSettings]);
   const lastImageEmbeddings = useRef<number[][]>([]);
   const lastFaceEmbedding = useRef<number[]>([]);
   const modelWarmupStarted = useRef(false);
@@ -1984,6 +2025,16 @@ function App() {
         />
       )}
 
+      <button
+        type="button"
+        className="theme-toggle-button"
+        onClick={() => setDarkMode((value) => !value)}
+        title={darkMode ? "Tema chiaro (Ctrl+D)" : "Tema scuro (Ctrl+D)"}
+        aria-label="Cambia tema"
+      >
+        {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
+
       <div className={`app-shell ${setupComplete ? "clean-shell" : ""}`}>
         {!setupComplete && (
         <aside className="sidebar">
@@ -2082,6 +2133,7 @@ function App() {
                 >
                   <GeneratedIcon name="search" size={28} />
                   <input
+                    ref={searchInputRef}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     onKeyDown={(event) => {
