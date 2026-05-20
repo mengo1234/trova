@@ -29,7 +29,9 @@ import {
   MoreVertical,
   Music2,
   ExternalLink,
+  Paperclip,
   Play,
+  Plus,
   PlusCircle,
   RefreshCw,
   Search,
@@ -599,6 +601,10 @@ function App() {
   );
   const [imageQueryFile, setImageQueryFile] = useState<File | null>(null);
   const [imageQueryPreview, setImageQueryPreview] = useState("");
+  // Multi-file: tutti i file allegati alla conversazione corrente
+  type AttachedFile = { file: File; previewUrl?: string; kind: "image" | "text" | "binary" };
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState("");
   const [localQuestion, setLocalQuestion] = useState("");
@@ -609,6 +615,8 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatThreadId, setChatThreadId] = useState<string>("");
   const [agentMode, setAgentMode] = useState<boolean>(false);
+  const [chatThreadsList, setChatThreadsList] = useState<Array<{ id: string; title: string; messageCount: number; lastMessageAt: number }>>([]);
+  const [showThreadHistory, setShowThreadHistory] = useState<boolean>(false);
   const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
   const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false });
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
@@ -1241,49 +1249,102 @@ function App() {
     }
     setIsLocalAskBusy(true);
     setError("");
-    // Se c'e un file caricato nella search box, includilo come contesto per l'AI
+    // Se ci sono file caricati nella search box, includili come contesto per l'AI.
+    // Multi-file: ognuno aggiunge un blocco testo; binari/immagini diventano solo metadata.
+    const filesToInclude = attachedFiles.length ? attachedFiles.map((entry) => entry.file) : (imageQueryFile ? [imageQueryFile] : []);
     let contextNote = "";
-    if (imageQueryFile) {
+    const perFileBudget = filesToInclude.length > 0 ? Math.floor(16000 / filesToInclude.length) : 0;
+    for (const file of filesToInclude) {
       try {
-        const name = imageQueryFile.name;
+        const name = file.name;
         const isText = /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(name)
-          || imageQueryFile.type.startsWith("text/")
-          || imageQueryFile.type === "application/json";
+          || file.type.startsWith("text/")
+          || file.type === "application/json";
         if (isText) {
-          const textContent = await imageQueryFile.text();
-          const truncated = textContent.slice(0, 8000);
-          contextNote = `\n\nFile caricato dall'utente: ${name}\n\`\`\`\n${truncated}${textContent.length > 8000 ? "\n[...troncato]" : ""}\n\`\`\``;
+          const textContent = await file.text();
+          const truncated = textContent.slice(0, perFileBudget);
+          contextNote += `\n\nFile caricato dall'utente: ${name}\n\`\`\`\n${truncated}${textContent.length > perFileBudget ? "\n[...troncato]" : ""}\n\`\`\``;
         } else {
-          contextNote = `\n\nFile caricato dall'utente: ${name} (${imageQueryFile.type || "binario"}, ${Math.round(imageQueryFile.size / 1024)} KB). Usa la ricerca per immagine se serve confrontarlo con altri file dell'indice.`;
+          contextNote += `\n\nFile caricato dall'utente: ${name} (${file.type || "binario"}, ${Math.round(file.size / 1024)} KB).`;
         }
       } catch (readErr) {
-        contextNote = `\n\nFile caricato dall'utente: ${imageQueryFile.name} (lettura non riuscita: ${shortError(readErr)}).`;
+        contextNote += `\n\nFile caricato dall'utente: ${file.name} (lettura non riuscita: ${shortError(readErr)}).`;
       }
     }
     const enrichedQuestion = contextNote ? `${question}${contextNote}` : question;
     const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: enrichedQuestion, createdAt: Date.now() }];
     setChatMessages(nextHistory);
     setLocalQuestion("");
+    // Streaming token-by-token via /api/chat/stream se il provider e remote (NVIDIA/Gemini),
+    // altrimenti fallback al comando non streaming via tauriInvoke.
+    const useStreaming = !agentMode && !aiProviderConfig.agentEnabled; // gli agenti richiedono tool calling sync
     try {
-      // Chat multi-turn via chat_with_workspace: il backend tiene la cronologia e fa RAG/agenti
-      const result = await tauriInvoke<{ threadId: string; answer: string; citations?: Array<{ filePath?: string; snippet?: string; name?: string }>; toolsUsed?: Array<{ fn: string; args: Record<string, unknown> }>; provider?: string; modelKey?: string }>("chat_with_workspace", {
-        messages: nextHistory.map((message) => ({ role: message.role, content: message.content })),
-        threadId: chatThreadId || undefined,
-        agentMode: agentMode || aiProviderConfig.agentEnabled,
-        provider: aiProviderConfig.provider,
-        modelKey: aiProviderConfig.modelKey,
-      });
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: result.answer || "(Nessuna risposta dal modello)",
-        citations: result.citations,
-        toolsUsed: result.toolsUsed,
-        createdAt: Date.now(),
-      };
-      setChatMessages([...nextHistory, assistantMessage]);
-      setChatThreadId(result.threadId || chatThreadId);
-      // Compat: aggiorno anche il vecchio localAnswer per la sezione esistente
-      setLocalAnswer({ answer: result.answer || "", citations: (result.citations || []).map((c) => ({ title: c.name || c.filePath?.split("/").pop() || "file", filePath: c.filePath, chunkIndex: 0, score: 0.5, snippet: c.snippet || "" })) });
+      if (useStreaming) {
+        const response = await fetch("http://127.0.0.1:17654/api/chat/stream", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: nextHistory.map((message) => ({ role: message.role, content: message.content })),
+            threadId: chatThreadId || undefined,
+            provider: aiProviderConfig.provider,
+            modelKey: aiProviderConfig.modelKey,
+            includeRag: true,
+          }),
+        });
+        if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let assistantBuffer = "";
+        let citations: Array<{ filePath?: string; snippet?: string; name?: string }> = [];
+        let receivedThreadId = chatThreadId;
+        // Aggiungo subito un messaggio assistente vuoto da popolare
+        setChatMessages([...nextHistory, { role: "assistant", content: "", createdAt: Date.now() }]);
+        let lastFlush = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(payload);
+              if (parsed.type === "citations" && Array.isArray(parsed.citations)) citations = parsed.citations;
+              else if (parsed.type === "delta" && parsed.delta) assistantBuffer += parsed.delta;
+              else if (parsed.type === "done" && parsed.threadId) receivedThreadId = parsed.threadId;
+              else if (parsed.type === "error") throw new Error(parsed.error);
+            } catch (parseErr) {
+              if ((parseErr as Error).message?.startsWith("Nessun provider")) throw parseErr;
+            }
+          }
+          // Throttle render (max ~25fps)
+          const now = Date.now();
+          if (now - lastFlush > 40) {
+            lastFlush = now;
+            setChatMessages([...nextHistory, { role: "assistant", content: assistantBuffer, citations, createdAt: Date.now() }]);
+          }
+        }
+        setChatMessages([...nextHistory, { role: "assistant", content: assistantBuffer || "(Nessuna risposta)", citations, createdAt: Date.now() }]);
+        setChatThreadId(receivedThreadId);
+        setLocalAnswer({ answer: assistantBuffer, citations: (citations || []).map((c) => ({ title: c.name || c.filePath?.split("/").pop() || "file", filePath: c.filePath, chunkIndex: 0, score: 0.5, snippet: c.snippet || "" })) });
+      } else {
+        // Non-streaming (agent mode)
+        const result = await tauriInvoke<{ threadId: string; answer: string; citations?: Array<{ filePath?: string; snippet?: string; name?: string }>; toolsUsed?: Array<{ fn: string; args: Record<string, unknown> }>; provider?: string; modelKey?: string }>("chat_with_workspace", {
+          messages: nextHistory.map((message) => ({ role: message.role, content: message.content })),
+          threadId: chatThreadId || undefined,
+          agentMode: true,
+          provider: aiProviderConfig.provider,
+          modelKey: aiProviderConfig.modelKey,
+        });
+        setChatMessages([...nextHistory, { role: "assistant", content: result.answer || "(Nessuna risposta)", citations: result.citations, toolsUsed: result.toolsUsed, createdAt: Date.now() }]);
+        setChatThreadId(result.threadId || chatThreadId);
+        setLocalAnswer({ answer: result.answer || "", citations: (result.citations || []).map((c) => ({ title: c.name || c.filePath?.split("/").pop() || "file", filePath: c.filePath, chunkIndex: 0, score: 0.5, snippet: c.snippet || "" })) });
+      }
       setSemanticStatus(await safeInvoke<SemanticStatus | null>("get_semantic_status", {}, semanticStatus));
     } catch (err) {
       // Fallback al vecchio ask_files se chat_with_workspace fallisce (es. nessun provider AI)
@@ -1305,6 +1366,42 @@ function App() {
     setChatMessages([]);
     setChatThreadId("");
     setLocalAnswer(null);
+  }
+
+  async function loadChatThreadsList() {
+    const list = await safeInvoke<Array<{ id: string; title: string; messageCount: number; lastMessageAt: number }>>("list_chat_threads", {}, []);
+    setChatThreadsList(list || []);
+  }
+
+  async function loadChatThread(threadId: string) {
+    const result = await safeInvoke<{ threadId: string; messages: ChatMessage[] }>("get_chat_thread", { threadId }, { threadId: "", messages: [] });
+    if (result?.messages) {
+      setChatMessages(result.messages);
+      setChatThreadId(threadId);
+      setShowThreadHistory(false);
+    }
+  }
+
+  async function deleteChatThreadAt(threadId: string) {
+    await safeInvoke<{ ok: boolean }>("delete_chat_thread", { threadId }, { ok: false });
+    if (threadId === chatThreadId) startNewChatThread();
+    await loadChatThreadsList();
+  }
+
+  async function exportChatThread(format: "markdown" | "json" = "markdown") {
+    if (!chatThreadId) {
+      setError("Nessuna conversazione da esportare.");
+      return;
+    }
+    const result = await safeInvoke<{ format: string; content: string }>("export_chat_thread", { threadId: chatThreadId, format }, { format, content: "" });
+    if (!result?.content) return;
+    const blob = new Blob([result.content], { type: format === "json" ? "application/json" : "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `trova-chat-${chatThreadId}.${format === "json" ? "json" : "md"}`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   async function findSimilarToText() {
@@ -1447,6 +1544,44 @@ function App() {
     } finally {
       setIsGeminiBusy(false);
     }
+  }
+
+  function classifyFile(file: File): "image" | "text" | "binary" {
+    if (file.type.startsWith("image/")) return "image";
+    if (
+      file.type.startsWith("text/")
+      || file.type === "application/json"
+      || /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(file.name)
+    ) return "text";
+    return "binary";
+  }
+
+  function addAttachedFiles(fileList: FileList | File[] | null) {
+    const list = Array.from(fileList || []);
+    if (!list.length) return;
+    const next: AttachedFile[] = list.map((file) => {
+      const kind = classifyFile(file);
+      return { file, kind, previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined };
+    });
+    setAttachedFiles((prev) => [...prev, ...next].slice(-10)); // max 10 file alla volta
+    // Primo file immagine: avvia anche la ricerca per immagine (compat con flow esistente)
+    const firstImage = next.find((item) => item.kind === "image");
+    if (firstImage) {
+      void uploadImageQuery([firstImage.file] as unknown as FileList);
+    }
+  }
+
+  function removeAttachedFile(index: number) {
+    setAttachedFiles((prev) => {
+      const target = prev[index];
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      const next = prev.filter((_, i) => i !== index);
+      // Se ho rimosso l'immagine che era anche imageQueryFile, pulisci la ricerca per immagine
+      if (target && imageQueryFile && target.file === imageQueryFile) {
+        clearImageQuery();
+      }
+      return next;
+    });
   }
 
   async function uploadImageQuery(files: FileList | null) {
@@ -1763,7 +1898,16 @@ function App() {
           {!showSettings && (
             <div className="search-row">
               <LiquidGlassSurface variant="search">
-                <div className={`search-box ${imageQueryPreview ? "with-attachment" : ""}`}>
+                <div
+                  className={`search-box ${attachedFiles.length ? "with-attachment" : ""} ${isDraggingFile ? "dropping" : ""}`}
+                  onDragOver={(event) => { event.preventDefault(); setIsDraggingFile(true); }}
+                  onDragLeave={() => setIsDraggingFile(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setIsDraggingFile(false);
+                    addAttachedFiles(event.dataTransfer?.files || null);
+                  }}
+                >
                   <GeneratedIcon name="search" size={28} />
                   <input
                     value={query}
@@ -1771,8 +1915,8 @@ function App() {
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         const text = query.trim();
-                        if (imageQueryPreview && text) {
-                          // File caricato + testo: domanda all'AI sul file
+                        if (attachedFiles.length && text) {
+                          // File caricati + testo: domanda all'AI con i file come contesto
                           setLocalQuestion(text);
                           void askLocalFiles();
                         } else {
@@ -1781,29 +1925,43 @@ function App() {
                         }
                       }
                     }}
-                    placeholder={imageQueryPreview
-                      ? `Chiedi qualcosa su ${imageQueryFile?.name || "questo file"}, oppure premi Invio per cercare simili...`
-                      : "Cerca testo, oppure carica un file e fai una domanda..."}
+                    placeholder={attachedFiles.length
+                      ? `Chiedi qualcosa su ${attachedFiles.length === 1 ? attachedFiles[0].file.name : `${attachedFiles.length} file caricati`}...`
+                      : "Cerca testo, oppure trascina un file qui (o premi +) e fai una domanda..."}
                   />
-                  <button className="icon-button" onClick={clearImageQuery} aria-label="Svuota">
-                    <X size={20} />
-                  </button>
+                  {(query || attachedFiles.length > 0) && (
+                    <button className="icon-button" onClick={() => { setQuery(""); attachedFiles.forEach((file) => file.previewUrl && URL.revokeObjectURL(file.previewUrl)); setAttachedFiles([]); clearImageQuery(); }} aria-label="Svuota">
+                      <X size={20} />
+                    </button>
+                  )}
                   <i />
-                  <button className="icon-button" onClick={() => imageQueryInput.current?.click()} aria-label="Carica file o foto">
-                    <GeneratedIcon name="vision" size={24} />
+                  <button className="icon-button icon-button-add" onClick={() => imageQueryInput.current?.click()} aria-label="Carica file" title="Carica file (anche trascinalo qui)">
+                    <Plus size={26} strokeWidth={2.4} />
                   </button>
                   <input
                     ref={imageQueryInput}
                     className="hidden-input"
                     type="file"
-                    accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown,.md,.txt,.docx,.doc"
-                    onChange={(event) => void uploadImageQuery(event.currentTarget.files)}
+                    multiple
+                    accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown,.md,.txt,.docx,.doc,.csv,.json,.html,.xml,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.rs,.go,.java,.c,.cpp,.sh"
+                    onChange={(event) => { addAttachedFiles(event.currentTarget.files); event.currentTarget.value = ""; }}
                   />
                 </div>
               </LiquidGlassSurface>
-              {imageQueryPreview && (
-                <div className="search-box-attachment-hint" role="status">
-                  📎 {imageQueryFile?.name || "file caricato"} — scrivi la domanda e premi Invio per chiedere all'AI
+              {attachedFiles.length > 0 && (
+                <div className="search-attached-files" role="status">
+                  {attachedFiles.map((attached, index) => (
+                    <span key={`${attached.file.name}-${index}`} className={`search-attached-chip kind-${attached.kind}`} title={attached.file.name}>
+                      {attached.kind === "image" && attached.previewUrl
+                        ? <img src={attached.previewUrl} alt="" />
+                        : <Paperclip size={12} />}
+                      <em>{attached.file.name}</em>
+                      <button type="button" onClick={() => removeAttachedFile(index)} aria-label="Rimuovi">
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="search-attached-hint">scrivi e premi Invio per chiedere all'AI</span>
                 </div>
               )}
             </div>
@@ -1861,6 +2019,13 @@ function App() {
               onToggleAgent={() => setAgentMode((value) => !value)}
               onNewThread={startNewChatThread}
               onOpenSettings={() => setShowSettings(true)}
+              onExport={() => void exportChatThread("markdown")}
+              onShowHistory={async () => { await loadChatThreadsList(); setShowThreadHistory(true); }}
+              chatThreadsList={chatThreadsList}
+              showThreadHistory={showThreadHistory}
+              onCloseHistory={() => setShowThreadHistory(false)}
+              onPickThread={loadChatThread}
+              onDeleteThread={deleteChatThreadAt}
             />
           )}
 
@@ -3983,6 +4148,13 @@ function LocalAskPanel({
   onToggleAgent,
   onNewThread,
   onOpenSettings,
+  onExport,
+  onShowHistory,
+  chatThreadsList = [],
+  showThreadHistory = false,
+  onCloseHistory,
+  onPickThread,
+  onDeleteThread,
 }: {
   question: string;
   query: string;
@@ -3999,6 +4171,13 @@ function LocalAskPanel({
   onToggleAgent?: () => void;
   onNewThread?: () => void;
   onOpenSettings?: () => void;
+  onExport?: () => void;
+  onShowHistory?: () => void;
+  chatThreadsList?: Array<{ id: string; title: string; messageCount: number; lastMessageAt: number }>;
+  showThreadHistory?: boolean;
+  onCloseHistory?: () => void;
+  onPickThread?: (threadId: string) => void;
+  onDeleteThread?: (threadId: string) => void;
 }) {
   const semanticLabel = semanticStatus?.ready
     ? `${semanticStatus.embeddedChunks.toLocaleString("it-IT")} pezzi pronti`
@@ -4032,6 +4211,16 @@ function LocalAskPanel({
               <span>Nuova</span>
             </button>
           )}
+          {onShowHistory && (
+            <button type="button" className="local-ask-toggle subtle" onClick={onShowHistory} title="Cronologia conversazioni">
+              <Clock3 size={14} />
+            </button>
+          )}
+          {onExport && hasChat && (
+            <button type="button" className="local-ask-toggle subtle" onClick={onExport} title="Esporta conversazione in Markdown">
+              <Download size={14} />
+            </button>
+          )}
           {onOpenSettings && (
             <button type="button" className="local-ask-toggle subtle" onClick={onOpenSettings} title="Cambia provider AI o modello">
               <GeneratedIcon name="settings" size={14} />
@@ -4039,6 +4228,32 @@ function LocalAskPanel({
           )}
         </div>
       </div>
+
+      {showThreadHistory && (
+        <div className="local-thread-history" role="dialog" aria-label="Cronologia conversazioni">
+          <header>
+            <strong>Conversazioni passate</strong>
+            <button type="button" onClick={onCloseHistory} aria-label="Chiudi"><X size={14} /></button>
+          </header>
+          {chatThreadsList.length === 0 ? (
+            <p className="local-thread-empty">Nessuna conversazione salvata.</p>
+          ) : (
+            <ul>
+              {chatThreadsList.map((thread) => (
+                <li key={thread.id}>
+                  <button type="button" className="thread-item" onClick={() => onPickThread?.(thread.id)}>
+                    <strong>{thread.title || "(senza titolo)"}</strong>
+                    <small>{thread.messageCount} messaggi{thread.lastMessageAt ? ` · ${new Date(thread.lastMessageAt).toLocaleDateString("it-IT")}` : ""}</small>
+                  </button>
+                  <button type="button" className="thread-delete" onClick={() => onDeleteThread?.(thread.id)} aria-label="Elimina conversazione">
+                    <X size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {hasChat && (
         <div className="local-chat-thread" aria-label="Conversazione AI">

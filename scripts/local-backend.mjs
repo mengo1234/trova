@@ -113,6 +113,10 @@ const watcherQueue = new Map();
 createServer(async (req, res) => {
   setCors(res);
   if (req.method === "OPTIONS") return endJson(res, {});
+  // Streaming chat endpoint: SSE token-by-token
+  if (req.method === "POST" && req.url === "/api/chat/stream") {
+    return handleChatStream(req, res);
+  }
   if (req.method !== "POST" || req.url !== "/api/command") {
     res.writeHead(404);
     return res.end("not found");
@@ -372,6 +376,29 @@ async function handleCommand(command, args) {
     delete state.chatThreads[args.threadId];
     await saveState(state);
     return { ok: true };
+  }
+  if (command === "export_chat_thread") {
+    const state = await loadState();
+    const messages = state.chatThreads?.[args.threadId] || [];
+    const format = String(args.format || "markdown").toLowerCase();
+    if (format === "json") return { format: "json", content: JSON.stringify(messages, null, 2) };
+    // Default markdown
+    const lines = [`# Conversazione Trova`, ""];
+    for (const message of messages) {
+      const when = message.createdAt ? new Date(message.createdAt).toLocaleString("it-IT") : "";
+      lines.push(`### ${message.role === "user" ? "Tu" : "Trova AI"}${when ? ` · ${when}` : ""}`);
+      lines.push("");
+      lines.push(message.content || "");
+      if (message.citations?.length) {
+        lines.push("");
+        lines.push("**Citazioni:**");
+        for (const citation of message.citations) {
+          lines.push(`- ${citation.filePath || citation.name || "?"}${citation.snippet ? ` — _${citation.snippet.slice(0, 120)}_` : ""}`);
+        }
+      }
+      lines.push("");
+    }
+    return { format: "markdown", content: lines.join("\n") };
   }
   if (command === "get_ai_provider_status") {
     return aiProviderStatus();
@@ -3725,6 +3752,112 @@ const CHAT_AGENT_TOOLS = [
     },
   },
 ];
+
+/**
+ * Streaming chat: legge il corpo JSON, fa RAG e chiama il modello in streaming SSE.
+ * Output: `data: {"delta": "..."}\n\n` per ogni chunk testuale, `data: [DONE]\n\n` alla fine.
+ */
+async function handleChatStream(req, res) {
+  let payload;
+  try {
+    const body = await readBody(req);
+    payload = body ? JSON.parse(body) : {};
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: "JSON non valido" }));
+  }
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  try {
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    if (!messages.length) {
+      send({ error: "Nessun messaggio" });
+      res.write("data: [DONE]\n\n");
+      return res.end();
+    }
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    const state = await loadState();
+    const ragSnippets = payload.includeRag !== false
+      ? await retrieveRagContext(state.index || [], lastUser?.content || "", 6)
+      : [];
+    const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode: Boolean(payload.agentMode) });
+    const conversation = [
+      { role: "system", content: systemPrompt },
+      ...messages.filter((message) => ["user", "assistant"].includes(message.role)),
+    ];
+    send({ type: "citations", citations: ragSnippets });
+    const resolved = await resolveAiProvider(payload.provider || TROVA_CHAT_PROVIDER, payload.modelKey || TROVA_CHAT_MODEL_KEY);
+    if (!resolved) {
+      send({ type: "error", error: "Nessun provider AI configurato" });
+      res.write("data: [DONE]\n\n");
+      return res.end();
+    }
+    const endpoint = resolved.provider === "nvidia"
+      ? NVIDIA_CHAT_URL
+      : resolved.provider === "gemini"
+        ? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        : resolved.provider === "ollama"
+          ? `${OLLAMA_BASE_URL}/v1/chat/completions`
+          : `${LMSTUDIO_BASE_URL}/v1/chat/completions`;
+    const upstream = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${resolved.apiKey}` },
+      body: JSON.stringify({ model: resolved.modelId, messages: conversation, stream: true, max_tokens: 1500, temperature: 0.2 }),
+    });
+    if (!upstream.ok || !upstream.body) {
+      const errText = await upstream.text().catch(() => "");
+      send({ type: "error", error: `Upstream ${upstream.status}: ${errText.slice(0, 200)}` });
+      res.write("data: [DONE]\n\n");
+      return res.end();
+    }
+    let fullAnswer = "";
+    let buffer = "";
+    const decoder = new TextDecoder();
+    for await (const chunk of upstream.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(payload);
+          const delta = parsed?.choices?.[0]?.delta?.content || "";
+          if (delta) {
+            fullAnswer += delta;
+            send({ type: "delta", delta });
+          }
+        } catch {
+          // Ignore malformed chunks
+        }
+      }
+    }
+    // Salva la conversazione completa nello stato
+    const threadId = payload.threadId || hash(`${Date.now()}:${lastUser?.content || ""}`).slice(0, 16);
+    state.chatThreads ||= {};
+    state.chatThreads[threadId] ||= [];
+    state.chatThreads[threadId].push({ role: "user", content: String(lastUser?.content || ""), createdAt: Date.now() });
+    state.chatThreads[threadId].push({
+      role: "assistant",
+      content: fullAnswer,
+      citations: ragSnippets.map((snippet) => ({ filePath: snippet.filePath, snippet: snippet.snippet, score: snippet.score })),
+      createdAt: Date.now(),
+    });
+    await saveState(state);
+    send({ type: "done", threadId });
+  } catch (err) {
+    send({ type: "error", error: String(err?.message || err) });
+  } finally {
+    res.write("data: [DONE]\n\n");
+    res.end();
+  }
+}
 
 async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true } = {}) {
   if (!Array.isArray(messages) || !messages.length) throw new Error("Nessun messaggio fornito.");
