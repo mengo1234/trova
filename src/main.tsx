@@ -2360,6 +2360,12 @@ function App() {
               onStartCaptureHotkey={() => setCapturingHotkey(true)}
               onCaptureHotkeyKeydown={captureHotkeyKeydown}
               onSaveHotkey={saveHotkey}
+              ollamaInstall={ollamaInstall}
+              onInstallOllamaGemma={installOllamaGemma}
+              onReloadAiStatus={async () => {
+                const next = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
+                if (next) setAiProviderStatus(next);
+              }}
             />
           ) : (
             <>
@@ -3417,6 +3423,9 @@ function SettingsPanel({
   onStartCaptureHotkey,
   onCaptureHotkeyKeydown,
   onSaveHotkey,
+  ollamaInstall,
+  onInstallOllamaGemma,
+  onReloadAiStatus,
 }: {
   paths: WatchPath[];
   status: IndexStatus | null;
@@ -3469,6 +3478,9 @@ function SettingsPanel({
   onStartCaptureHotkey: () => void;
   onCaptureHotkeyKeydown: (event: React.KeyboardEvent) => void;
   onSaveHotkey: (config: { shortcut: string; mode: string; enabled: boolean }) => void;
+  ollamaInstall: { label: string; progress: number; detail?: string; running: boolean } | null;
+  onInstallOllamaGemma: () => void;
+  onReloadAiStatus?: () => void;
 }) {
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
@@ -3988,7 +4000,7 @@ function SettingsPanel({
                 ) : ollamaInstall && !ollamaInstall.running && ollamaInstall.progress === 100 ? (
                   <div className="ai-ollama-done">✅ {ollamaInstall.detail || "Pronto"}</div>
                 ) : (
-                  <button type="button" className="settings-link-button primary" onClick={() => void installOllamaGemma()}>
+                  <button type="button" className="settings-link-button primary" onClick={() => onInstallOllamaGemma()}>
                     Installa Gemma offline (auto)
                   </button>
                 )}
@@ -4013,9 +4025,8 @@ function SettingsPanel({
                         if (value) {
                           await safeInvoke<{ ok: boolean }>("set_gemini_api_key", { apiKey: value }, { ok: false });
                           event.currentTarget.value = "";
-                          // Reload provider status
-                          const next = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
-                          if (next) setAiProviderStatus(next);
+                          // Reload provider status tramite callback dell'App
+                          onReloadAiStatus?.();
                         }
                       }
                     }}
