@@ -604,6 +604,13 @@ function App() {
   const [localQuestion, setLocalQuestion] = useState("");
   const [localAnswer, setLocalAnswer] = useState<LocalAskAnswer | null>(null);
   const [isLocalAskBusy, setIsLocalAskBusy] = useState(false);
+  // Chat multi-turn con AI (NVIDIA Nemotron / Gemma 4 / Ollama / LM Studio)
+  type ChatMessage = { role: "user" | "assistant"; content: string; citations?: { filePath?: string; snippet?: string; name?: string }[]; toolsUsed?: { fn: string; args: Record<string, unknown> }[]; createdAt?: number };
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatThreadId, setChatThreadId] = useState<string>("");
+  const [agentMode, setAgentMode] = useState<boolean>(false);
+  const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
+  const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false });
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
   const [localVisionStatus, setLocalVisionStatus] = useState<LocalVisionStatus | null>(null);
   const [localVisionMessage, setLocalVisionMessage] = useState("Foto e video non ancora preparati");
@@ -704,7 +711,7 @@ function App() {
   }, []);
 
   async function hydrate() {
-    const [paths, indexStatus, visionStatus, semantic, components, remoteConnectors, rclone, doctor, models, remoteAccess, simpleStatus, setupJob] = await Promise.all([
+    const [paths, indexStatus, visionStatus, semantic, components, remoteConnectors, rclone, doctor, models, remoteAccess, simpleStatus, setupJob, aiProvStatus, aiProvConfig] = await Promise.all([
       safeInvoke<WatchPath[]>("load_watch_paths", {}, fallbackWatchPaths),
       safeInvoke<IndexStatus | null>("get_index_status", {}, null),
       safeInvoke<LocalVisionStatus | null>("get_local_vision_status", {}, null),
@@ -717,7 +724,11 @@ function App() {
       safeInvoke<RemoteAccessStatus | null>("get_remote_access_status", {}, null),
       safeInvoke<SimpleAppStatus | null>("get_simple_app_status", {}, null),
       safeInvoke<AutoSetupJob | null>("get_auto_setup_status", {}, null),
+      safeInvoke<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>("get_ai_provider_status", {}, null),
+      safeInvoke<{ provider: string; modelKey: string; agentEnabled: boolean } | null>("get_ai_provider_config", {}, null),
     ]);
+    if (aiProvStatus) setAiProviderStatus(aiProvStatus);
+    if (aiProvConfig) setAiProviderConfig({ provider: aiProvConfig.provider || "auto", modelKey: aiProvConfig.modelKey || "nemotron-super-49b", agentEnabled: Boolean(aiProvConfig.agentEnabled) });
     setWatchPaths(paths.length ? paths : fallbackWatchPaths);
     setStatus(indexStatus);
     setLocalVisionStatus(visionStatus);
@@ -1230,21 +1241,50 @@ function App() {
     }
     setIsLocalAskBusy(true);
     setError("");
+    const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: question, createdAt: Date.now() }];
+    setChatMessages(nextHistory);
+    setLocalQuestion("");
     try {
-      const answer = await tauriInvoke<LocalAskAnswer>("ask_files", {
-        request: {
-          question,
-          filters: [filter],
-          limit: 6,
-        },
+      // Chat multi-turn via chat_with_workspace: il backend tiene la cronologia e fa RAG/agenti
+      const result = await tauriInvoke<{ threadId: string; answer: string; citations?: Array<{ filePath?: string; snippet?: string; name?: string }>; toolsUsed?: Array<{ fn: string; args: Record<string, unknown> }>; provider?: string; modelKey?: string }>("chat_with_workspace", {
+        messages: nextHistory.map((message) => ({ role: message.role, content: message.content })),
+        threadId: chatThreadId || undefined,
+        agentMode: agentMode || aiProviderConfig.agentEnabled,
+        provider: aiProviderConfig.provider,
+        modelKey: aiProviderConfig.modelKey,
       });
-      setLocalAnswer(answer);
+      const assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: result.answer || "(Nessuna risposta dal modello)",
+        citations: result.citations,
+        toolsUsed: result.toolsUsed,
+        createdAt: Date.now(),
+      };
+      setChatMessages([...nextHistory, assistantMessage]);
+      setChatThreadId(result.threadId || chatThreadId);
+      // Compat: aggiorno anche il vecchio localAnswer per la sezione esistente
+      setLocalAnswer({ answer: result.answer || "", citations: (result.citations || []).map((c) => ({ title: c.name || c.filePath?.split("/").pop() || "file", filePath: c.filePath, chunkIndex: 0, score: 0.5, snippet: c.snippet || "" })) });
       setSemanticStatus(await safeInvoke<SemanticStatus | null>("get_semantic_status", {}, semanticStatus));
     } catch (err) {
-      setError(String(err));
+      // Fallback al vecchio ask_files se chat_with_workspace fallisce (es. nessun provider AI)
+      try {
+        const answer = await tauriInvoke<LocalAskAnswer>("ask_files", { request: { question, filters: [filter], limit: 6 } });
+        setLocalAnswer(answer);
+        setChatMessages([...nextHistory, { role: "assistant", content: answer.answer || "", citations: (answer.citations || []).map((c) => ({ filePath: c.filePath, snippet: c.snippet, name: c.title })), createdAt: Date.now() }]);
+      } catch (innerErr) {
+        setError(`${shortError(err)}${innerErr ? ` — fallback fallito: ${shortError(innerErr)}` : ""}`);
+        // Tolgo l'ultimo messaggio user dato che non c'e risposta
+        setChatMessages(nextHistory.slice(0, -1));
+      }
     } finally {
       setIsLocalAskBusy(false);
     }
+  }
+
+  function startNewChatThread() {
+    setChatMessages([]);
+    setChatThreadId("");
+    setLocalAnswer(null);
   }
 
   async function findSimilarToText() {
@@ -1774,9 +1814,16 @@ function App() {
               answer={localAnswer}
               busy={isLocalAskBusy}
               semanticStatus={semanticStatus}
+              chatMessages={chatMessages}
+              agentMode={agentMode || aiProviderConfig.agentEnabled}
+              activeProviderLabel={aiProviderStatus?.providers?.find((p) => p.configured)?.label || "Modello AI non configurato"}
+              activeModelLabel={aiProviderStatus?.providers?.find((p) => p.id === aiProviderConfig.provider || (aiProviderConfig.provider === "auto" && p.configured))?.models?.find((m) => m.key === aiProviderConfig.modelKey)?.label || aiProviderConfig.modelKey}
               onQuestionChange={setLocalQuestion}
               onAsk={() => void askLocalFiles()}
               onSimilar={() => void findSimilarToText()}
+              onToggleAgent={() => setAgentMode((value) => !value)}
+              onNewThread={startNewChatThread}
+              onOpenSettings={() => setShowSettings(true)}
             />
           )}
 
@@ -1830,6 +1877,12 @@ function App() {
                 setStatus(await safeInvoke<IndexStatus | null>("clear_index", {}, status));
                 setLocalVisionStatus(await safeInvoke<LocalVisionStatus | null>("get_local_vision_status", {}, null));
                 setResults([]);
+              }}
+              aiProviderStatus={aiProviderStatus}
+              aiProviderConfig={aiProviderConfig}
+              onSaveAiProvider={async (config) => {
+                setAiProviderConfig(config);
+                await safeInvoke<{ ok: boolean }>("set_ai_provider", config, { ok: false });
               }}
             />
           ) : (
@@ -2880,6 +2933,9 @@ function SettingsPanel({
   onRemoteAccess,
   onInstallComponent,
   onClear,
+  aiProviderStatus,
+  aiProviderConfig,
+  onSaveAiProvider,
 }: {
   paths: WatchPath[];
   status: IndexStatus | null;
@@ -2924,6 +2980,9 @@ function SettingsPanel({
   onRemoteAccess: (active: boolean) => void;
   onInstallComponent: (componentId: string) => void;
   onClear: () => void;
+  aiProviderStatus: { providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }>; hint?: string }>; activeProvider: string; activeModel: string } | null;
+  aiProviderConfig: { provider: string; modelKey: string; agentEnabled: boolean };
+  onSaveAiProvider: (config: { provider: string; modelKey: string; agentEnabled: boolean }) => void;
 }) {
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
@@ -3378,36 +3437,105 @@ function SettingsPanel({
       )}
 
       {activeTab === "cloud" && (
-        <div className="settings-tab-panel settings-cloud-split">
-          <section className="settings-privacy-panel color-blue">
-            <div className="settings-section-title">
-                <GeneratedIcon name="cloud" size={34} />
+        <div className="settings-tab-panel">
+          <div className="settings-cloud-split">
+            <section className="settings-privacy-panel color-blue">
+              <div className="settings-section-title">
+                  <GeneratedIcon name="cloud" size={34} />
+                  <div>
+                  <strong>Google online</strong>
+                  <span>{cloudPaths.length ? `${cloudPaths.length} cartelle abilitate` : "Spento su tutte le cartelle"}</span>
+                </div>
+              </div>
+              <p className="settings-help-text">Google riceve solo file nelle cartelle con Online attivo. Tutto il resto resta sul PC.</p>
+              <div className="provider-status detailed">
+                <span><strong>Stato</strong>{geminiStatus}</span>
+              </div>
+            </section>
+            <section className="settings-privacy-panel color-green">
+              <div className="settings-section-title">
+                <GeneratedIcon name="sparkle" size={34} />
                 <div>
-                <strong>Google online</strong>
-                <span>{cloudPaths.length ? `${cloudPaths.length} cartelle abilitate` : "Spento su tutte le cartelle"}</span>
+                  <strong>NVIDIA online</strong>
+                  <span>{nvidiaCloudEnabled ? "Attivo sui risultati migliori" : "Spento, ordine locale"}</span>
+                </div>
               </div>
-            </div>
-            <p className="settings-help-text">Google riceve solo file nelle cartelle con Online attivo. Tutto il resto resta sul PC.</p>
-            <div className="provider-status detailed">
-              <span><strong>Stato</strong>{geminiStatus}</span>
-            </div>
-          </section>
-          <section className="settings-privacy-panel color-green">
+              <p className="settings-help-text">Serve solo ad aiutare l'ordine dei risultati migliori. Il contenuto completo resta locale salvo scelte online esplicite.</p>
+              <label className="settings-cloud-toggle large">
+                <input type="checkbox" checked={nvidiaCloudEnabled} onChange={onToggleNvidiaCloud} />
+                Usa NVIDIA online
+              </label>
+              <div className="provider-status detailed">
+                <span><strong>Stato</strong>{nvidiaStatus}</span>
+              </div>
+            </section>
+          </div>
+
+          <section className="settings-ai-models">
             <div className="settings-section-title">
-              <GeneratedIcon name="sparkle" size={34} />
+              <GeneratedIcon name="sparkle" size={28} />
               <div>
-                <strong>NVIDIA online</strong>
-                <span>{nvidiaCloudEnabled ? "Attivo sui risultati migliori" : "Spento, ordine locale"}</span>
+                <strong>Modello AI per chat e domande</strong>
+                <span>Sceglie il provider che risponde quando chiedi qualcosa nella ricerca.</span>
               </div>
             </div>
-            <p className="settings-help-text">Serve solo ad aiutare l'ordine dei risultati migliori. Il contenuto completo resta locale salvo scelte online esplicite.</p>
-            <label className="settings-cloud-toggle large">
-              <input type="checkbox" checked={nvidiaCloudEnabled} onChange={onToggleNvidiaCloud} />
-              Usa NVIDIA online
-            </label>
-            <div className="provider-status detailed">
-              <span><strong>Stato</strong>{nvidiaStatus}</span>
+            <p className="settings-help-text">Auto sceglie il primo provider disponibile (NVIDIA &gt; Ollama &gt; LM Studio &gt; Gemini). Puoi forzare un provider o usare un modello locale 100% offline.</p>
+            <div className="ai-provider-grid">
+              {(aiProviderStatus?.providers || []).map((provider) => (
+                <div
+                  key={provider.id}
+                  className={`ai-provider-card ${provider.configured ? "configured" : "missing"} ${aiProviderConfig.provider === provider.id ? "selected" : ""}`}
+                >
+                  <header>
+                    <strong>{provider.label}</strong>
+                    <em>{provider.configured ? "configurato" : "non disponibile"}</em>
+                  </header>
+                  {provider.models && provider.models.length > 0 ? (
+                    <div className="ai-model-list">
+                      {provider.models.map((model) => (
+                        <label key={`${provider.id}-${model.key}`} className={`ai-model-row ${aiProviderConfig.provider === provider.id && aiProviderConfig.modelKey === model.key ? "active" : ""}`}>
+                          <input
+                            type="radio"
+                            name="ai-provider-model"
+                            checked={aiProviderConfig.provider === provider.id && aiProviderConfig.modelKey === model.key}
+                            disabled={!provider.configured}
+                            onChange={() => onSaveAiProvider({ ...aiProviderConfig, provider: provider.id, modelKey: model.key })}
+                          />
+                          <span><strong>{model.label}</strong><i>{model.category || "chat"}</i></span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="ai-provider-hint">{provider.hint || "Avvia il servizio locale per vederlo qui."}</p>
+                  )}
+                </div>
+              ))}
+              <div className={`ai-provider-card ${aiProviderConfig.provider === "auto" ? "selected" : ""}`}>
+                <header>
+                  <strong>Auto</strong>
+                  <em>raccomandato</em>
+                </header>
+                <label className="ai-model-row">
+                  <input
+                    type="radio"
+                    name="ai-provider-model"
+                    checked={aiProviderConfig.provider === "auto"}
+                    onChange={() => onSaveAiProvider({ ...aiProviderConfig, provider: "auto", modelKey: aiProviderConfig.modelKey || "nemotron-super-49b" })}
+                  />
+                  <span><strong>Scegli da solo</strong><i>NVIDIA → Ollama → LM Studio → Gemini</i></span>
+                </label>
+              </div>
             </div>
+
+            <label className="settings-cloud-toggle large">
+              <input
+                type="checkbox"
+                checked={aiProviderConfig.agentEnabled}
+                onChange={(event) => onSaveAiProvider({ ...aiProviderConfig, agentEnabled: event.currentTarget.checked })}
+              />
+              Permetti agli agenti AI di cercare sul web e leggere link
+            </label>
+            <p className="settings-help-text">Con gli agenti attivi, l'AI puo decidere autonomamente di fare ricerche web (DuckDuckGo), aprire URL e calcolare numeri. I tuoi file restano locali — solo le query e gli URL escono.</p>
           </section>
         </div>
       )}
@@ -3808,22 +3936,38 @@ function LocalAskPanel({
   answer,
   busy,
   semanticStatus,
+  chatMessages = [],
+  agentMode = false,
+  activeProviderLabel = "",
+  activeModelLabel = "",
   onQuestionChange,
   onAsk,
   onSimilar,
+  onToggleAgent,
+  onNewThread,
+  onOpenSettings,
 }: {
   question: string;
   query: string;
   answer: LocalAskAnswer | null;
   busy: boolean;
   semanticStatus: SemanticStatus | null;
+  chatMessages?: { role: "user" | "assistant"; content: string; citations?: { filePath?: string; snippet?: string; name?: string }[]; toolsUsed?: { fn: string; args: Record<string, unknown> }[] }[];
+  agentMode?: boolean;
+  activeProviderLabel?: string;
+  activeModelLabel?: string;
   onQuestionChange: (value: string) => void;
   onAsk: () => void;
   onSimilar: () => void;
+  onToggleAgent?: () => void;
+  onNewThread?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const semanticLabel = semanticStatus?.ready
     ? `${semanticStatus.embeddedChunks.toLocaleString("it-IT")} pezzi pronti`
     : "Domande in attesa della preparazione";
+  const hasChat = chatMessages.length > 0;
+  const fallbackAnswer = !hasChat && answer ? answer : null;
 
   return (
     <section className="local-ask-panel">
@@ -3831,7 +3975,66 @@ function LocalAskPanel({
         <GeneratedIcon name="semantic" size={22} />
         <strong>Fai una domanda</strong>
         <span>{semanticLabel}</span>
+        {(activeProviderLabel || activeModelLabel) && (
+          <span className="local-ask-model" title="Modello AI attivo">{activeModelLabel || activeProviderLabel}</span>
+        )}
+        <div className="local-ask-actions">
+          {onToggleAgent && (
+            <button
+              type="button"
+              className={`local-ask-toggle ${agentMode ? "active" : ""}`}
+              onClick={onToggleAgent}
+              title={agentMode ? "Agente attivo: l'AI puo cercare sul web e leggere link" : "Agente spento: l'AI usa solo i tuoi file"}
+            >
+              <GeneratedIcon name="sparkle" size={14} />
+              <span>Agente {agentMode ? "On" : "Off"}</span>
+            </button>
+          )}
+          {onNewThread && hasChat && (
+            <button type="button" className="local-ask-toggle" onClick={onNewThread} title="Inizia una nuova conversazione">
+              <span>Nuova</span>
+            </button>
+          )}
+          {onOpenSettings && (
+            <button type="button" className="local-ask-toggle subtle" onClick={onOpenSettings} title="Cambia provider AI o modello">
+              <GeneratedIcon name="settings" size={14} />
+            </button>
+          )}
+        </div>
       </div>
+
+      {hasChat && (
+        <div className="local-chat-thread" aria-label="Conversazione AI">
+          {chatMessages.map((message, index) => (
+            <div key={`${message.role}-${index}`} className={`local-chat-message ${message.role}`}>
+              <div className="local-chat-author">
+                {message.role === "user" ? "Tu" : "Trova AI"}
+                {message.role === "assistant" && message.toolsUsed?.length ? (
+                  <span className="local-chat-tools">· tool: {message.toolsUsed.map((tool) => tool.fn).join(", ")}</span>
+                ) : null}
+              </div>
+              <div className="local-chat-bubble"><pre>{message.content}</pre></div>
+              {message.role === "assistant" && message.citations && message.citations.length > 0 && (
+                <div className="local-citations">
+                  {message.citations.slice(0, 5).map((citation, i) => (
+                    <span key={`${citation.filePath || citation.name || i}-${i}`}>
+                      {i + 1}. {citation.name || citation.filePath?.split("/").pop() || "file"}
+                      {citation.snippet ? ` · ${citation.snippet.slice(0, 80)}${citation.snippet.length > 80 ? "..." : ""}` : ""}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+          {busy && (
+            <div className="local-chat-message assistant pending">
+              <div className="local-chat-author">Trova AI</div>
+              <div className="local-chat-bubble"><span className="thinking-dots"><i /><i /><i /></span></div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="local-ask-row">
         <input
           value={question}
@@ -3839,7 +4042,7 @@ function LocalAskPanel({
           onKeyDown={(event) => {
             if (event.key === "Enter") onAsk();
           }}
-          placeholder={query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti"}
+          placeholder={hasChat ? "Continua la conversazione..." : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti"}
         />
         <button onClick={onAsk} disabled={busy}>
           <GeneratedIcon name="search" size={18} />
@@ -3850,11 +4053,12 @@ function LocalAskPanel({
           <span>Simili</span>
         </button>
       </div>
-      {answer && (
+
+      {fallbackAnswer && (
         <div className="local-answer">
-          <pre>{answer.answer}</pre>
+          <pre>{fallbackAnswer.answer}</pre>
           <div className="local-citations">
-            {answer.citations.slice(0, 5).map((citation, index) => (
+            {fallbackAnswer.citations.slice(0, 5).map((citation, index) => (
               <span key={`${citation.filePath ?? citation.title}-${citation.chunkIndex ?? index}`}>
                 {index + 1}. {citation.title}
                 {citation.chunkIndex !== undefined ? ` · parte ${citation.chunkIndex + 1}` : ""}

@@ -27,7 +27,27 @@ const TYPESENSE_URL = process.env.TROVA_TYPESENSE_URL || "http://127.0.0.1:8108"
 const TYPESENSE_API_KEY = process.env.TYPESENSE_API_KEY || "trova-typesense-key";
 const TYPESENSE_COLLECTION = process.env.TROVA_TYPESENSE_COLLECTION || "trova_files_core";
 const NVIDIA_CHAT_URL = process.env.TROVA_NVIDIA_CHAT_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
+const NVIDIA_EMBEDDINGS_URL = process.env.TROVA_NVIDIA_EMBEDDINGS_URL || "https://integrate.api.nvidia.com/v1/embeddings";
 const NVIDIA_CHAT_MODEL = process.env.TROVA_NVIDIA_CHAT_MODEL || "deepseek-ai/deepseek-v4-flash";
+// Registro modelli NVIDIA NIM (free tier, aggiornati maggio 2026)
+const NVIDIA_MODEL_REGISTRY = {
+  // Chat / reasoning
+  "nemotron-super-49b": { id: "nvidia/llama-3.3-nemotron-super-49b-v1", category: "chat", label: "NVIDIA Nemotron Super 49B", purpose: "chat e reasoning, modello di punta NVIDIA" },
+  "deepseek-v4-flash": { id: "deepseek-ai/deepseek-v4-flash", category: "chat", label: "DeepSeek V4 Flash", purpose: "riassunti veloci, contesto ampio" },
+  "llama-3-3-70b": { id: "meta/llama-3.3-70b-instruct", category: "chat", label: "Llama 3.3 70B Instruct", purpose: "chat general purpose" },
+  // Embeddings retrieval
+  "nv-embedqa-1b": { id: "nvidia/llama-3.2-nv-embedqa-1b-v2", category: "embedding", label: "NVIDIA NV-EmbedQA 1B v2", purpose: "embedding ottimizzato Q&A retrieval", dim: 2048 },
+};
+// Registro modelli Google Gemini / Gemma free tier
+const GEMINI_MODEL_REGISTRY = {
+  "gemma-4-27b": { id: "gemma-4-27b-it", category: "chat", label: "Google Gemma 4 27B Instruct", purpose: "open-weight free, alternativa a NVIDIA" },
+  "gemini-2.5-flash": { id: "gemini-2.5-flash", category: "chat", label: "Gemini 2.5 Flash", purpose: "chat veloce con contesto enorme" },
+  "gemini-embedding-2": { id: "models/gemini-embedding-2", category: "embedding", label: "Gemini Embedding 2", purpose: "embedding multilingua di Google" },
+};
+const TROVA_CHAT_PROVIDER = process.env.TROVA_CHAT_PROVIDER || "auto"; // auto|nvidia|gemma|gemini|ollama|lmstudio
+const TROVA_CHAT_MODEL_KEY = process.env.TROVA_CHAT_MODEL_KEY || "nemotron-super-49b";
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
+const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || "http://127.0.0.1:1234";
 const TEXT_EMBEDDING_MODEL = process.env.TROVA_TEXT_EMBEDDING_MODEL || "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 const LEXICAL_EMBEDDING_MODEL = "trova-lexical-v1";
 const VISUAL_FINGERPRINT_MODEL = "trova-fingerprint-v1";
@@ -319,6 +339,56 @@ async function handleCommand(command, args) {
     state.chatThreads[threadId].push({ role: "assistant", content: answer.answer, citations: answer.citations, createdAt: Date.now() });
     await saveState(state);
     return { ...answer, threadId, messages: state.chatThreads[threadId] };
+  }
+  if (command === "chat_with_workspace") {
+    // Vera chat multi-turn con RAG + agenti (web search, fetch URL, calc)
+    return chatWithWorkspace({
+      messages: args.messages || [],
+      threadId: args.threadId,
+      agentMode: Boolean(args.agentMode),
+      provider: args.provider,
+      modelKey: args.modelKey,
+      maxSteps: args.maxSteps,
+      includeRag: args.includeRag !== false,
+    });
+  }
+  if (command === "list_chat_threads") {
+    const state = await loadState();
+    return Object.entries(state.chatThreads || {}).map(([id, messages]) => ({
+      id,
+      title: messages?.[0]?.content?.slice(0, 60) || "Conversazione",
+      messageCount: messages?.length || 0,
+      lastMessageAt: messages?.[messages.length - 1]?.createdAt || 0,
+    })).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+  }
+  if (command === "get_chat_thread") {
+    const state = await loadState();
+    const threadId = args.threadId;
+    return { threadId, messages: state.chatThreads?.[threadId] || [] };
+  }
+  if (command === "delete_chat_thread") {
+    const state = await loadState();
+    state.chatThreads ||= {};
+    delete state.chatThreads[args.threadId];
+    await saveState(state);
+    return { ok: true };
+  }
+  if (command === "get_ai_provider_status") {
+    return aiProviderStatus();
+  }
+  if (command === "set_ai_provider") {
+    const state = await loadState();
+    state.aiProviderConfig = {
+      provider: String(args.provider || "auto"),
+      modelKey: String(args.modelKey || ""),
+      agentEnabled: Boolean(args.agentEnabled),
+    };
+    await saveState(state);
+    return { ok: true, config: state.aiProviderConfig };
+  }
+  if (command === "get_ai_provider_config") {
+    const state = await loadState();
+    return state.aiProviderConfig || { provider: "auto", modelKey: TROVA_CHAT_MODEL_KEY, agentEnabled: false };
   }
   if (command === "get_file_context") {
     const state = await loadState();
@@ -3428,6 +3498,423 @@ async function discoverApiKeys() {
     nvidiaKeyCount: nvidia.length,
     nvidiaModel: NVIDIA_CHAT_MODEL,
   };
+}
+
+// ============================================================
+// UNIFIED AI PROVIDER (NVIDIA / Gemini-Gemma / Ollama / LM Studio)
+// ============================================================
+
+async function aiProviderStatus() {
+  const nvidia = await discoverNvidiaApiKeys();
+  const geminiKey = normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY);
+  const ollama = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
+  const lmstudio = await probeOpenAiCompatibleEndpoint(`${LMSTUDIO_BASE_URL}/v1/models`).catch(() => null);
+  return {
+    providers: [
+      {
+        id: "nvidia",
+        label: "NVIDIA NIM (cloud free)",
+        configured: nvidia.length > 0,
+        keyCount: nvidia.length,
+        models: Object.entries(NVIDIA_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
+        endpoint: NVIDIA_CHAT_URL,
+      },
+      {
+        id: "gemini",
+        label: "Google Gemini / Gemma (cloud free)",
+        configured: Boolean(geminiKey),
+        models: Object.entries(GEMINI_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
+        endpoint: "https://generativelanguage.googleapis.com",
+      },
+      {
+        id: "ollama",
+        label: "Ollama (locale, 100% offline)",
+        configured: Boolean(ollama?.ok),
+        endpoint: OLLAMA_BASE_URL,
+        models: ollama?.models || [],
+        hint: ollama?.ok ? "" : "Avvia ollama serve e fai 'ollama pull llama3.3'",
+      },
+      {
+        id: "lmstudio",
+        label: "LM Studio (locale, 100% offline)",
+        configured: Boolean(lmstudio?.ok),
+        endpoint: LMSTUDIO_BASE_URL,
+        models: lmstudio?.models || [],
+        hint: lmstudio?.ok ? "" : "Avvia LM Studio e attiva il server su 1234",
+      },
+    ],
+    activeProvider: TROVA_CHAT_PROVIDER,
+    activeModel: TROVA_CHAT_MODEL_KEY,
+  };
+}
+
+async function probeOpenAiCompatibleEndpoint(url) {
+  try {
+    const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return { ok: false };
+    const data = await response.json().catch(() => null);
+    const models = Array.isArray(data?.models)
+      ? data.models.map((item) => item.name || item.id).filter(Boolean)
+      : Array.isArray(data?.data)
+        ? data.data.map((item) => item.id).filter(Boolean)
+        : [];
+    return { ok: true, models: models.slice(0, 30) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Chiama il provider AI scelto con messaggi in formato OpenAI chat completions.
+ * messages = [{role: 'system'|'user'|'assistant'|'tool', content: string, tool_call_id?, name?}]
+ * Opzioni: provider (auto|nvidia|gemini|ollama|lmstudio), modelKey, tools, maxTokens, temperature.
+ */
+async function aiChatComplete({ messages, provider = TROVA_CHAT_PROVIDER, modelKey = TROVA_CHAT_MODEL_KEY, tools = [], maxTokens = 1024, temperature = 0.2 }) {
+  const resolved = await resolveAiProvider(provider, modelKey);
+  if (!resolved) throw new Error("Nessun provider AI configurato. Aggiungi una chiave NVIDIA/Gemini o avvia Ollama/LM Studio.");
+  if (resolved.provider === "nvidia") {
+    return callNvidiaChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+  }
+  if (resolved.provider === "gemini") {
+    return callGeminiChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+  }
+  if (resolved.provider === "ollama") {
+    return callOpenAiCompatibleChat({ baseUrl: OLLAMA_BASE_URL, path: "/v1/chat/completions", apiKey: "ollama", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
+  }
+  if (resolved.provider === "lmstudio") {
+    return callOpenAiCompatibleChat({ baseUrl: LMSTUDIO_BASE_URL, path: "/v1/chat/completions", apiKey: "lmstudio", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
+  }
+  throw new Error(`Provider sconosciuto: ${resolved.provider}`);
+}
+
+async function resolveAiProvider(requested, modelKey) {
+  const nvidia = await discoverNvidiaApiKeys();
+  const geminiKey = normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY);
+  const order = requested === "auto"
+    ? ["nvidia", "ollama", "lmstudio", "gemini"]
+    : [requested];
+  for (const provider of order) {
+    if (provider === "nvidia" && nvidia.length) {
+      const def = NVIDIA_MODEL_REGISTRY[modelKey] || NVIDIA_MODEL_REGISTRY["nemotron-super-49b"];
+      return { provider, modelId: def.id, apiKey: nvidia[0].key };
+    }
+    if (provider === "gemini" && geminiKey) {
+      const def = GEMINI_MODEL_REGISTRY[modelKey] || GEMINI_MODEL_REGISTRY["gemma-4-27b"];
+      return { provider, modelId: def.id, apiKey: geminiKey };
+    }
+    if (provider === "ollama") {
+      const probe = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
+      if (probe?.ok) return { provider, modelId: probe.models[0] || "llama3.3", apiKey: "ollama" };
+    }
+    if (provider === "lmstudio") {
+      const probe = await probeOpenAiCompatibleEndpoint(`${LMSTUDIO_BASE_URL}/v1/models`).catch(() => null);
+      if (probe?.ok) return { provider, modelId: probe.models[0] || "loaded-model", apiKey: "lmstudio" };
+    }
+  }
+  return null;
+}
+
+async function callNvidiaChat({ messages, modelId, apiKey, tools, maxTokens, temperature }) {
+  const body = {
+    model: modelId,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: false,
+  };
+  if (tools?.length) body.tools = tools;
+  const response = await fetch(NVIDIA_CHAT_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`NVIDIA chat ${response.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  return { provider: "nvidia", modelId, raw: data, message: data?.choices?.[0]?.message || { content: "" } };
+}
+
+async function callOpenAiCompatibleChat({ baseUrl, path = "/v1/chat/completions", apiKey, messages, modelId, tools, maxTokens, temperature }) {
+  const body = { model: modelId, messages, temperature, max_tokens: maxTokens, stream: false };
+  if (tools?.length) body.tools = tools;
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Chat ${baseUrl} ${response.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  return { provider: baseUrl, modelId, raw: data, message: data?.choices?.[0]?.message || { content: "" } };
+}
+
+async function callGeminiChat({ messages, modelId, apiKey, maxTokens, temperature }) {
+  // Gemini ha endpoint diverso ma supporta openai-compat su /v1beta/openai/chat/completions
+  const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: modelId, messages, temperature, max_tokens: maxTokens, stream: false }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Gemini ${response.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  return { provider: "gemini", modelId, raw: data, message: data?.choices?.[0]?.message || { content: "" } };
+}
+
+// ============================================================
+// CHAT MULTI-TURN CON RAG + AGENTI (web search, fetch URL, calc)
+// ============================================================
+
+const CHAT_AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_files",
+      description: "Cerca nei file indicizzati dell'utente (documenti, foto, audio, video) per parola chiave o frase. Restituisce snippet + percorsi.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" }, limit: { type: "number", default: 6 } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Ricerca sul web. Usa SOLO quando l'utente lo permette esplicitamente o non basta il locale.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" }, limit: { type: "number", default: 5 } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_url",
+      description: "Scarica e legge una pagina web (HTML→testo). Usa per leggere una URL specifica.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" }, maxChars: { type: "number", default: 4000 } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calc",
+      description: "Calcola un'espressione matematica numerica (somma, prodotti, percentuali, parentesi). NON valuta codice arbitrario.",
+      parameters: {
+        type: "object",
+        properties: { expression: { type: "string" } },
+        required: ["expression"],
+      },
+    },
+  },
+];
+
+async function chatWithWorkspace({ messages = [], threadId, agentMode = false, provider, modelKey, maxSteps = 6, includeRag = true } = {}) {
+  if (!Array.isArray(messages) || !messages.length) throw new Error("Nessun messaggio fornito.");
+  const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  if (!lastUserMessage) throw new Error("Nessun messaggio utente.");
+
+  const state = await loadState();
+  const ragSnippets = includeRag
+    ? await retrieveRagContext(state.index || [], lastUserMessage.content, 6)
+    : [];
+
+  const systemPrompt = buildChatSystemPrompt({ ragSnippets, agentMode });
+  const conversation = [
+    { role: "system", content: systemPrompt },
+    ...messages.filter((message) => ["user", "assistant", "tool"].includes(message.role)),
+  ];
+
+  const tools = agentMode ? CHAT_AGENT_TOOLS : [];
+  const usedTools = [];
+  let finalMessage = null;
+  for (let step = 0; step < maxSteps; step += 1) {
+    const completion = await aiChatComplete({ messages: conversation, provider, modelKey, tools, maxTokens: 1500, temperature: 0.2 });
+    const message = completion.message || {};
+    if (!message.tool_calls?.length) {
+      finalMessage = message;
+      break;
+    }
+    conversation.push(message);
+    for (const call of message.tool_calls) {
+      const fn = call.function?.name || "";
+      let args = {};
+      try { args = JSON.parse(call.function?.arguments || "{}"); } catch { args = {}; }
+      const result = await dispatchAgentTool(fn, args, state);
+      usedTools.push({ fn, args, output: result });
+      conversation.push({ role: "tool", tool_call_id: call.id, name: fn, content: JSON.stringify(result).slice(0, 6000) });
+    }
+  }
+  if (!finalMessage) {
+    finalMessage = { content: "Mi servono troppi passaggi: prova a riformulare la richiesta." };
+  }
+
+  const newThreadId = threadId || hash(`${Date.now()}:${lastUserMessage.content}`).slice(0, 16);
+  state.chatThreads ||= {};
+  state.chatThreads[newThreadId] ||= [];
+  state.chatThreads[newThreadId].push({ role: "user", content: String(lastUserMessage.content || ""), createdAt: Date.now() });
+  state.chatThreads[newThreadId].push({
+    role: "assistant",
+    content: String(finalMessage.content || ""),
+    citations: ragSnippets.map((snippet) => ({ filePath: snippet.filePath, snippet: snippet.snippet, score: snippet.score })),
+    toolsUsed: usedTools.map((entry) => ({ fn: entry.fn, args: entry.args })),
+    createdAt: Date.now(),
+  });
+  await saveState(state);
+  return {
+    threadId: newThreadId,
+    answer: String(finalMessage.content || ""),
+    citations: ragSnippets,
+    toolsUsed: usedTools,
+    provider: TROVA_CHAT_PROVIDER,
+    modelKey: TROVA_CHAT_MODEL_KEY,
+  };
+}
+
+function buildChatSystemPrompt({ ragSnippets, agentMode }) {
+  const ragBlock = ragSnippets.length
+    ? `Citazioni reali estratte dai file dell'utente (usa SOLO queste informazioni dove possibile e cita il file):\n${ragSnippets.map((snippet, i) => `[${i + 1}] ${snippet.filePath}\n${snippet.snippet}`).join("\n\n")}`
+    : "Nessun risultato dai file locali per questa domanda. Rispondi solo se sicuro, altrimenti chiedi di indicizzare la cartella giusta.";
+  const agentBlock = agentMode
+    ? "Puoi usare gli strumenti search_files, web_search, fetch_url, calc per migliorare la risposta. Usa web_search solo se i file locali non bastano."
+    : "Non usare strumenti esterni. Rispondi basandoti solo sulle citazioni qui sotto.";
+  return [
+    "Sei l'assistente di Trova, un'app desktop locale per cercare nei file del PC.",
+    "Rispondi sempre in italiano (a meno che la domanda sia in altra lingua), chiaramente e con citazioni quando hai usato un file.",
+    "Quando citi un file, usa il formato [n] dove n e l'indice del file nell'elenco citazioni qui sotto.",
+    agentBlock,
+    ragBlock,
+  ].join("\n\n");
+}
+
+async function retrieveRagContext(index, query, limit = 6) {
+  const trimmedQuery = String(query || "").trim();
+  if (!trimmedQuery) return [];
+  // Riusa il motore di ricerca semantica + testuale gia presente
+  try {
+    const queryEmbedding = await embedTextLocal(trimmedQuery).catch(() => null);
+    const snippets = [];
+    for (const entry of index) {
+      const haystack = `${entry.name} ${entry.content || ""}`.toLowerCase();
+      const textHits = trimmedQuery.toLowerCase().split(/\s+/).filter((token) => token.length >= 3 && haystack.includes(token)).length;
+      const semantic = queryEmbedding ? bestSemanticChunk(entry, queryEmbedding.vector) : null;
+      const score = textHits * 0.18 + (semantic?.score || 0);
+      if (score < 0.18 && !textHits) continue;
+      const snippet = semantic?.snippet || entry.snippet || (entry.content || "").slice(0, 320);
+      if (!snippet.trim()) continue;
+      snippets.push({ filePath: entry.filePath, name: entry.name, score, snippet: snippet.trim() });
+    }
+    snippets.sort((a, b) => b.score - a.score);
+    return snippets.slice(0, limit);
+  } catch (err) {
+    return [];
+  }
+}
+
+async function dispatchAgentTool(name, args, state) {
+  if (name === "search_files") {
+    const results = await searchIndex(state.index || [], { textQuery: String(args.query || ""), filters: ["all"], semantic: true, fuzzy: true, limit: Math.min(20, Math.max(1, Number(args.limit) || 6)) });
+    return results.slice(0, Math.min(10, results.length)).map((item) => ({
+      name: item.name, path: item.path, snippet: item.snippet?.slice(0, 320) || "",
+    }));
+  }
+  if (name === "web_search") {
+    return webSearchDuckDuckGo(String(args.query || ""), Math.min(10, Math.max(1, Number(args.limit) || 5)));
+  }
+  if (name === "fetch_url") {
+    return fetchUrlAsText(String(args.url || ""), Math.min(20000, Math.max(200, Number(args.maxChars) || 4000)));
+  }
+  if (name === "calc") {
+    return evaluateNumericExpression(String(args.expression || ""));
+  }
+  return { error: `tool sconosciuto: ${name}` };
+}
+
+async function webSearchDuckDuckGo(query, limit = 5) {
+  try {
+    const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      headers: { "user-agent": "Mozilla/5.0 (Trova local search)" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return { error: `DuckDuckGo ${response.status}` };
+    const html = await response.text();
+    const results = [];
+    const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = re.exec(html)) !== null && results.length < limit) {
+      const link = decodeHtml(match[1]);
+      const title = decodeHtml(match[2]).trim();
+      const snippet = decodeHtml(match[3].replace(/<[^>]+>/g, "")).trim();
+      results.push({ title, url: link, snippet: snippet.slice(0, 320) });
+    }
+    return { results };
+  } catch (err) {
+    return { error: String(err?.message || err) };
+  }
+}
+
+async function fetchUrlAsText(url, maxChars = 4000) {
+  try {
+    const response = await fetch(url, {
+      headers: { "user-agent": "Mozilla/5.0 (Trova local search)" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) return { error: `${response.status}` };
+    const html = await response.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, maxChars);
+    return { url, text, chars: text.length };
+  } catch (err) {
+    return { error: String(err?.message || err) };
+  }
+}
+
+function evaluateNumericExpression(expression) {
+  const cleaned = String(expression || "").replace(/\s+/g, "");
+  if (!cleaned) return { error: "expression vuota" };
+  if (!/^[0-9+\-*/().%,^e]+$/.test(cleaned)) return { error: "espressione non numerica permessa" };
+  const safe = cleaned.replace(/,/g, ".").replace(/\^/g, "**").replace(/%/g, "/100");
+  try {
+    // eslint-disable-next-line no-new-func
+    const value = Function(`"use strict"; return (${safe});`)();
+    if (typeof value !== "number" || !Number.isFinite(value)) return { error: "risultato non valido" };
+    return { expression: cleaned, result: value };
+  } catch (err) {
+    return { error: String(err?.message || err) };
+  }
+}
+
+function decodeHtml(text) {
+  return String(text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, "/");
 }
 
 async function nvidiaAiStatus() {

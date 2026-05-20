@@ -38,10 +38,12 @@ Vai alla pagina delle **[Release](https://github.com/mengo1234/trova/releases/la
 - 📷 **Ricerca per immagine** locale con embedding neurali (CLIP, DINOv3, SigLIP2) — anche offline
 - 🎙️ **Audio e video cercabili** via fingerprint visuale + scene/keyframe
 - 👤 **Modalita "stessa persona"** esplicita, locale, senza nomi (richiede consenso)
-- 🤖 **Cloud opzionale**: Gemini File Search e NVIDIA rerank, solo se decidi tu, cartella per cartella
-- 🌐 **Remote Access** sicuro: web UI raggiungibile dalla LAN con token, opt-in
-- 💻 **Cross-platform**: Linux, Windows, macOS
-- 🔓 **GPL-3.0 open source**, ispirato a [File Brain](https://github.com/Hamza5/file-brain), Apache Tika, Typesense
+- 💬 **Chat AI multi-turno** sui tuoi file con cronologia e citazioni cliccabili (NVIDIA Nemotron 49B, Gemma 4 27B, Llama 3.3 70B, DeepSeek V4 Flash, oppure Ollama / LM Studio locali)
+- 🤖 **Agenti AI** opzionali: l'AI puo cercare sul web (DuckDuckGo), leggere link, fare calcoli quando i tuoi file non bastano
+- 🌐 **Cloud opzionale**: Gemini File Search e NVIDIA rerank, solo se decidi tu, cartella per cartella
+- 🔌 **Remote Access** sicuro: web UI raggiungibile dalla LAN con token, opt-in
+- 💻 **Cross-platform**: Linux, Windows, macOS — installer .msi/.deb/.rpm/.dmg con backend bundled, niente Node da installare
+- 🔓 **GPL-3.0 open source**, ispirato a [File Brain](https://github.com/Hamza5/file-brain), [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm), Apache Tika, Typesense
 
 ---
 
