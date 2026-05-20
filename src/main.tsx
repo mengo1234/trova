@@ -632,6 +632,9 @@ function App() {
   const [isListening, setIsListening] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ollamaInstall, setOllamaInstall] = useState<{ label: string; progress: number; detail?: string; running: boolean } | null>(null);
+  // Hotkey globale
+  const [hotkeyConfig, setHotkeyConfig] = useState<{ shortcut: string; mode: string; enabled: boolean }>({ shortcut: "", mode: "spotlight", enabled: false });
+  const [capturingHotkey, setCapturingHotkey] = useState(false);
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
   const [localVisionStatus, setLocalVisionStatus] = useState<LocalVisionStatus | null>(null);
   const [localVisionMessage, setLocalVisionMessage] = useState("Foto e video non ancora preparati");
@@ -791,6 +794,34 @@ function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [ollamaInstall?.running]);
 
+  // Cattura combinazione tasti per la hotkey globale
+  function captureHotkeyKeydown(event: React.KeyboardEvent) {
+    event.preventDefault();
+    const parts: string[] = [];
+    if (event.ctrlKey) parts.push("Control");
+    if (event.metaKey) parts.push("Super");
+    if (event.altKey) parts.push("Alt");
+    if (event.shiftKey) parts.push("Shift");
+    const key = event.key;
+    // Ignora se e stato premuto solo un modificatore
+    if (!["Control", "Meta", "Alt", "Shift"].includes(key)) {
+      const named = key === " " ? "Space" : key.length === 1 ? key.toUpperCase() : key;
+      parts.push(named);
+      const combo = parts.join("+");
+      setHotkeyConfig((prev) => ({ ...prev, shortcut: combo }));
+      setCapturingHotkey(false);
+    }
+  }
+
+  async function saveHotkey(next: { shortcut: string; mode: string; enabled: boolean }) {
+    setHotkeyConfig(next);
+    const result = await safeInvoke<{ shortcut: string; mode: string; enabled: boolean } | null>(
+      "set_global_hotkey", { shortcut: next.shortcut, mode: next.mode, enabled: next.enabled }, null
+    );
+    if (result) setHotkeyConfig(result);
+    else if (next.enabled) setError("Scorciatoia non valida o non registrabile. Provane un'altra (es. Control+Space).");
+  }
+
   async function installOllamaGemma() {
     await safeInvoke<{ ok: boolean; started: boolean }>("install_ollama_gemma", {}, { ok: false, started: false });
     setOllamaInstall({ label: "Avvio...", progress: 1, running: true });
@@ -816,6 +847,8 @@ function App() {
     if (aiProvStatus) setAiProviderStatus(aiProvStatus);
     if (aiProvConfig) setAiProviderConfig({ provider: aiProvConfig.provider || "auto", modelKey: aiProvConfig.modelKey || "nemotron-super-49b", agentEnabled: Boolean(aiProvConfig.agentEnabled) });
     void loadPinnedDocuments();
+    const hk = await safeInvoke<{ shortcut: string; mode: string; enabled: boolean }>("get_global_hotkey", {}, { shortcut: "", mode: "spotlight", enabled: false });
+    if (hk) setHotkeyConfig(hk);
     setWatchPaths(paths.length ? paths : fallbackWatchPaths);
     setStatus(indexStatus);
     setLocalVisionStatus(visionStatus);
@@ -2322,6 +2355,11 @@ function App() {
                 setAiProviderConfig(config);
                 await safeInvoke<{ ok: boolean }>("set_ai_provider", config, { ok: false });
               }}
+              hotkeyConfig={hotkeyConfig}
+              capturingHotkey={capturingHotkey}
+              onStartCaptureHotkey={() => setCapturingHotkey(true)}
+              onCaptureHotkeyKeydown={captureHotkeyKeydown}
+              onSaveHotkey={saveHotkey}
             />
           ) : (
             <>
@@ -3374,6 +3412,11 @@ function SettingsPanel({
   aiProviderStatus,
   aiProviderConfig,
   onSaveAiProvider,
+  hotkeyConfig,
+  capturingHotkey,
+  onStartCaptureHotkey,
+  onCaptureHotkeyKeydown,
+  onSaveHotkey,
 }: {
   paths: WatchPath[];
   status: IndexStatus | null;
@@ -3421,6 +3464,11 @@ function SettingsPanel({
   aiProviderStatus: { providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }>; hint?: string }>; activeProvider: string; activeModel: string } | null;
   aiProviderConfig: { provider: string; modelKey: string; agentEnabled: boolean };
   onSaveAiProvider: (config: { provider: string; modelKey: string; agentEnabled: boolean }) => void;
+  hotkeyConfig: { shortcut: string; mode: string; enabled: boolean };
+  capturingHotkey: boolean;
+  onStartCaptureHotkey: () => void;
+  onCaptureHotkeyKeydown: (event: React.KeyboardEvent) => void;
+  onSaveHotkey: (config: { shortcut: string; mode: string; enabled: boolean }) => void;
 }) {
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
@@ -4119,6 +4167,43 @@ function SettingsPanel({
               <button onClick={onIndex}><GeneratedIcon name="database" size={18} /> Rileggi i file</button>
               <button onClick={onClear}><GeneratedIcon name="archive" size={18} /> Cancella ricerca</button>
               <button onClick={() => onWatcher(!status?.watcherActive)}><GeneratedIcon name="watcher" size={18} /> {status?.watcherActive ? "Ferma aggiornamenti" : "Avvia aggiornamenti"}</button>
+            </div>
+          </section>
+
+          <section className="settings-privacy-panel" style={{ gridColumn: "1 / -1" }}>
+            <div className="settings-section-title">
+              <GeneratedIcon name="search" size={34} />
+              <div>
+                <strong>Scorciatoia globale</strong>
+                <span>Apri Trova da qualsiasi app con una combinazione di tasti.</span>
+              </div>
+            </div>
+            <p className="settings-help-text">Premi "Registra tasti" e poi la combinazione che vuoi (es. Control+Spazio). Funziona solo nell'app desktop installata.</p>
+            <div className="hotkey-config-row">
+              <button
+                type="button"
+                className={`hotkey-capture ${capturingHotkey ? "capturing" : ""}`}
+                onClick={onStartCaptureHotkey}
+                onKeyDown={capturingHotkey ? onCaptureHotkeyKeydown : undefined}
+              >
+                {capturingHotkey ? "Premi i tasti ora..." : (hotkeyConfig.shortcut || "Nessuna scorciatoia")}
+              </button>
+              <label className="hotkey-mode-option">
+                <input type="radio" name="hotkey-mode" checked={hotkeyConfig.mode === "spotlight"}
+                  onChange={() => onSaveHotkey({ ...hotkeyConfig, mode: "spotlight" })} />
+                <span>Casella di ricerca al centro (veloce)</span>
+              </label>
+              <label className="hotkey-mode-option">
+                <input type="radio" name="hotkey-mode" checked={hotkeyConfig.mode === "app"}
+                  onChange={() => onSaveHotkey({ ...hotkeyConfig, mode: "app" })} />
+                <span>Apri il programma intero</span>
+              </label>
+              <label className="settings-cloud-toggle large">
+                <input type="checkbox" checked={hotkeyConfig.enabled}
+                  onChange={(event) => onSaveHotkey({ ...hotkeyConfig, enabled: event.currentTarget.checked })}
+                  disabled={!hotkeyConfig.shortcut} />
+                Attiva la scorciatoia globale
+              </label>
             </div>
           </section>
           <section className="settings-privacy-panel">
@@ -5599,6 +5684,71 @@ function hashCode(value: string) {
   return hash;
 }
 
+// Casella di ricerca spotlight: minimale, centrata, sempre in primo piano.
+// Cerca via backend e mostra i top risultati; Invio sul primo apre il file. Esc chiude.
+function SpotlightSearch() {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<IndexedFile[]>([]);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", window.localStorage.getItem("trova.theme") === "dark");
+    inputRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") void safeInvoke("hide_spotlight_window", {}, null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    const text = q.trim();
+    if (!text) { setResults([]); return; }
+    let cancelled = false;
+    setBusy(true);
+    const timer = window.setTimeout(async () => {
+      const hits = await safeInvoke<IndexedFile[]>("search_index", {
+        request: { textQuery: text, filters: ["all"], useLocal: true, semantic: true, fuzzy: true, limit: 8, includeSnippets: true },
+      }, []);
+      if (!cancelled) { setResults(hits || []); setBusy(false); }
+    }, 220);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [q]);
+
+  const openFile = (item: IndexedFile) => {
+    void safeInvoke("open_in_folder", { path: item.path }, null);
+    void safeInvoke("hide_spotlight_window", {}, null);
+  };
+
+  return (
+    <div className="spotlight-shell">
+      <div className="spotlight-box">
+        <GeneratedIcon name="search" size={24} />
+        <input
+          ref={inputRef}
+          value={q}
+          onChange={(event) => setQ(event.currentTarget.value)}
+          onKeyDown={(event) => { if (event.key === "Enter" && results[0]) openFile(results[0]); }}
+          placeholder="Cerca al volo nei tuoi file..."
+        />
+        {busy && <span className="spotlight-spinner" />}
+      </div>
+      {results.length > 0 && (
+        <div className="spotlight-results">
+          {results.map((item) => (
+            <button key={item.id} type="button" className="spotlight-result" onClick={() => openFile(item)}>
+              <GeneratedIcon name={iconFor(item)} size={18} />
+              <span className="spotlight-result-name">{item.name}</span>
+              <span className="spotlight-result-path">{item.path}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type TrovaGlobal = typeof globalThis & {
   __trovaReactRoot?: ReturnType<typeof ReactDOM.createRoot>;
 };
@@ -5608,8 +5758,11 @@ const rootElement = document.getElementById("root")!;
 const root = trovaGlobal.__trovaReactRoot ?? ReactDOM.createRoot(rootElement);
 trovaGlobal.__trovaReactRoot = root;
 
+// Modalita spotlight: finestra leggera con solo la casella di ricerca al centro
+const isSpotlight = new URLSearchParams(window.location.search).has("spotlight");
+
 root.render(
   <React.StrictMode>
-    <App />
+    {isSpotlight ? <SpotlightSearch /> : <App />}
   </React.StrictMode>,
 );

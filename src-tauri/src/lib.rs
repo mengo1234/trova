@@ -2449,8 +2449,146 @@ fn guess_page(text: &str, query: &str) -> Option<u32> {
         .and_then(|n| n.parse::<u32>().ok())
 }
 
+// ===== HOTKEY GLOBALE =====
+
+static HOTKEY_MODE: OnceLock<Mutex<String>> = OnceLock::new();
+
+#[derive(Serialize, Deserialize, Clone)]
+struct HotkeyConfig {
+    shortcut: String, // es. "CommandOrControl+Space", "Alt+T"
+    mode: String,     // "app" (apri programma) | "spotlight" (casella al centro)
+    enabled: bool,
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        HotkeyConfig { shortcut: String::new(), mode: "spotlight".into(), enabled: false }
+    }
+}
+
+fn hotkey_config_path() -> PathBuf {
+    data_dir().join("hotkey.json")
+}
+
+fn load_hotkey_config() -> HotkeyConfig {
+    fs::read_to_string(hotkey_config_path())
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+fn save_hotkey_config(config: &HotkeyConfig) -> Result<(), String> {
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    fs::write(hotkey_config_path(), content).map_err(|e| e.to_string())
+}
+
+fn trigger_hotkey(app: &tauri::AppHandle) {
+    let mode = HOTKEY_MODE
+        .get_or_init(|| Mutex::new("spotlight".into()))
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_else(|_| "spotlight".into());
+    if mode == "spotlight" {
+        let _ = open_or_focus_spotlight(app);
+    } else {
+        // Modalita app: porta la finestra principale in primo piano
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn open_or_focus_spotlight(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("spotlight") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let url = tauri::WebviewUrl::App("index.html?spotlight=1".into());
+    let window = tauri::WebviewWindowBuilder::new(app, "spotlight", url)
+        .title("Trova - Cerca")
+        .inner_size(720.0, 110.0)
+        .center()
+        .always_on_top(true)
+        .decorations(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+fn register_saved_global_shortcut(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let config = load_hotkey_config();
+    HOTKEY_MODE.get_or_init(|| Mutex::new(config.mode.clone()));
+    if let Ok(mut m) = HOTKEY_MODE.get().unwrap().lock() {
+        *m = config.mode.clone();
+    }
+    if config.enabled && !config.shortcut.is_empty() {
+        let _ = app.global_shortcut().register(config.shortcut.as_str());
+    }
+}
+
+#[tauri::command]
+fn get_global_hotkey() -> Result<HotkeyConfig, String> {
+    Ok(load_hotkey_config())
+}
+
+#[tauri::command]
+fn set_global_hotkey(app: tauri::AppHandle, shortcut: String, mode: String, enabled: bool) -> Result<HotkeyConfig, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    // Deregistra tutte le scorciatoie precedenti
+    let _ = app.global_shortcut().unregister_all();
+    let config = HotkeyConfig { shortcut: shortcut.clone(), mode: mode.clone(), enabled };
+    save_hotkey_config(&config)?;
+    HOTKEY_MODE.get_or_init(|| Mutex::new(mode.clone()));
+    if let Ok(mut m) = HOTKEY_MODE.get().unwrap().lock() {
+        *m = mode.clone();
+    }
+    if enabled && !shortcut.is_empty() {
+        app.global_shortcut()
+            .register(shortcut.as_str())
+            .map_err(|e| format!("Scorciatoia non valida: {e}"))?;
+    }
+    Ok(config)
+}
+
+#[tauri::command]
+fn show_spotlight_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_spotlight(&app)
+}
+
+#[tauri::command]
+fn hide_spotlight_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("spotlight") {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        trigger_hotkey(app);
+                    }
+                })
+                .build(),
+        )
+        .setup(|app| {
+            // Registra la hotkey globale salvata dall'utente (se presente)
+            let handle = app.handle().clone();
+            register_saved_global_shortcut(&handle);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             clear_index,
             discover_api_keys,
@@ -2474,7 +2612,11 @@ pub fn run() {
             read_image_data_url,
             read_file_data_url,
             update_visual_asset_embedding,
-            visual_embedding_from_data_url
+            visual_embedding_from_data_url,
+            set_global_hotkey,
+            get_global_hotkey,
+            show_spotlight_window,
+            hide_spotlight_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Trova");

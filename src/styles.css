@@ -80,6 +80,75 @@
 }
 .theme-toggle-button:hover { transform: scale(1.08); }
 
+/* ===== SPOTLIGHT ===== */
+.spotlight-shell {
+  width: 100vw;
+  min-height: 100vh;
+  background: transparent;
+  padding: 8px;
+  font-family: inherit;
+}
+.spotlight-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: var(--glass-panel-strong, rgba(255,255,255,0.95));
+  box-shadow: 0 16px 48px rgba(0,0,0,0.3);
+  border: 1px solid var(--glass-line, rgba(132,146,166,0.25));
+  backdrop-filter: blur(20px);
+}
+.spotlight-box input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  outline: none;
+  color: var(--trova-ink, #202124);
+}
+.spotlight-spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid rgba(66,133,244,0.3); border-top-color: #1a73e8;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.spotlight-results {
+  margin-top: 8px;
+  border-radius: 14px;
+  background: var(--glass-panel-strong, rgba(255,255,255,0.97));
+  box-shadow: 0 12px 36px rgba(0,0,0,0.25);
+  overflow: hidden;
+  border: 1px solid var(--glass-line, rgba(132,146,166,0.2));
+}
+.spotlight-result {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left; border: none; background: transparent;
+  padding: 10px 16px; cursor: pointer; border-bottom: 1px solid rgba(132,146,166,0.12);
+}
+.spotlight-result:hover { background: rgba(66,133,244,0.10); }
+.spotlight-result-name { font-weight: 600; color: var(--trova-ink, #202124); }
+.spotlight-result-path { font-size: 11px; color: var(--trova-muted, #5f6368); margin-left: auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== HOTKEY CONFIG ===== */
+.hotkey-config-row { display: grid; gap: 10px; margin-top: 8px; }
+.hotkey-capture {
+  justify-self: start;
+  min-width: 220px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 2px dashed rgba(66,133,244,0.45);
+  background: rgba(66,133,244,0.06);
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a73e8;
+  cursor: pointer;
+}
+.hotkey-capture.capturing { border-color: #ea4335; color: #c5302c; background: rgba(234,67,53,0.08); animation: mic-pulse 1.2s ease-in-out infinite; }
+.hotkey-mode-option { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--trova-ink, #3c4043); }
+.hotkey-mode-option input { accent-color: #1a73e8; }
+
 * {
   box-sizing: border-box;
 }

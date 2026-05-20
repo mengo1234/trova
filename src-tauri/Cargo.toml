@@ -28,3 +28,4 @@ tauri = { version = "2.9.1", features = [] }
 walkdir = "2.5.0"
 zip = "2.2.2"
 rfd = "0.17.2"
+tauri-plugin-global-shortcut = "2"
