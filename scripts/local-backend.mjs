@@ -473,6 +473,15 @@ async function handleCommand(command, args) {
   if (command === "get_ai_provider_status") {
     return aiProviderStatus();
   }
+  if (command === "get_ollama_install_status") {
+    const state = await loadState();
+    return state.ollamaInstall || { label: "non avviata", progress: 0, running: false };
+  }
+  if (command === "install_ollama_gemma") {
+    // Fire-and-forget: l'utente legge il progresso via get_ollama_install_status
+    void installLocalComponent("ollama-gemma").catch(() => undefined);
+    return { ok: true, started: true };
+  }
   if (command === "set_gemini_api_key") {
     // Salva la chiave Gemini nello state cosi viene rilevata da discoverApiKeys
     const state = await loadState();
@@ -4610,6 +4619,7 @@ async function installLocalComponent(id) {
     };
   }
   if (id === "rclone") return installRcloneLocal();
+  if (id === "ollama-gemma") return installOllamaWithGemma();
   const osInfo = await detectOsInfo();
   const plan = installPlanFor(id, osInfo);
   if (!plan) {
@@ -4852,6 +4862,196 @@ async function canRunPasswordlessSudo() {
   } catch {
     return false;
   }
+}
+
+/**
+ * Installa Ollama localmente in .trova/bin e scarica Gemma 3 4B IT (~3GB).
+ * Aggiorna state.ollamaInstall con il progresso cosi la UI lo legge.
+ * Modello scelto: gemma3:4b — bilanciamento qualita/dimensione per "nabbi".
+ */
+const OLLAMA_DEFAULT_MODEL = process.env.TROVA_OLLAMA_DEFAULT_MODEL || "gemma3:4b";
+let activeOllamaServerChild = null;
+
+async function installOllamaWithGemma() {
+  const started = Date.now();
+  const platform = os.platform();
+  const arch = os.arch();
+  const steps = [];
+
+  const updateProgress = async (label, progress, detail = "") => {
+    const state = await loadState();
+    state.ollamaInstall = { label, progress, detail, updatedAt: Date.now(), running: progress < 100 };
+    await saveState(state);
+  };
+
+  try {
+    await updateProgress("Scarico Ollama", 5, "Preparo l'installer");
+
+    // 1) Scarica binary Ollama
+    const target = ollamaDownloadTarget(platform, arch);
+    if (!target) throw new Error(`Ollama non disponibile per ${platform}/${arch}`);
+    const installRoot = path.join(DATA_DIR, "install", `ollama-${Date.now()}`);
+    await fs.mkdir(installRoot, { recursive: true });
+    const archivePath = path.join(installRoot, target.archive);
+    const startedDownload = Date.now();
+    await updateProgress("Scarico Ollama", 10, `Da ${target.url}`);
+    const response = await fetch(target.url);
+    if (!response.ok) throw new Error(`Download Ollama fallito: HTTP ${response.status}`);
+    const totalBytes = Number(response.headers.get("content-length") || 0);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Stream Ollama non disponibile");
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      if (totalBytes) {
+        const pct = 10 + Math.floor((received / totalBytes) * 30);
+        await updateProgress("Scarico Ollama", Math.min(40, pct), `${(received / 1024 / 1024).toFixed(0)} / ${(totalBytes / 1024 / 1024).toFixed(0)} MB`);
+      }
+    }
+    await fs.writeFile(archivePath, Buffer.concat(chunks));
+    steps.push({ label: "Download Ollama", ok: true, durationMs: Date.now() - startedDownload, output: `${(received / 1024 / 1024).toFixed(0)} MB` });
+
+    // 2) Estrai binario
+    await updateProgress("Installo Ollama", 45, "Estraggo il binario");
+    const extractDir = path.join(installRoot, "extract");
+    await fs.mkdir(extractDir, { recursive: true });
+    if (target.archive.endsWith(".tar.zst")) {
+      const tar = await commandCandidate("tar", ["--version"]);
+      if (!tar) throw new Error("Serve tar per estrarre Ollama");
+      // tar moderno supporta --zstd; fallback a zstd | tar se serve
+      try {
+        await execFile(tar.command, [...tar.prefix, "--zstd", "-xf", archivePath, "-C", extractDir], {
+          timeout: 300_000,
+          maxBuffer: 4_000_000,
+        });
+      } catch {
+        // Fallback: decomprimi con zstd poi tar
+        const zstd = await commandCandidate("zstd", ["--version"]);
+        if (!zstd) throw new Error("Serve zstd o tar con supporto --zstd per estrarre Ollama");
+        const tarPath = archivePath.replace(/\.zst$/, "");
+        await execFile(zstd.command, [...zstd.prefix, "-d", "-f", archivePath, "-o", tarPath], { timeout: 300_000, maxBuffer: 4_000_000 });
+        await execFile(tar.command, [...tar.prefix, "-xf", tarPath, "-C", extractDir], { timeout: 300_000, maxBuffer: 4_000_000 });
+      }
+    } else if (target.archive.endsWith(".tgz") || target.archive.endsWith(".tar.gz")) {
+      const tar = await commandCandidate("tar", ["--version"]);
+      if (!tar) throw new Error("Serve tar per estrarre Ollama");
+      await execFile(tar.command, [...tar.prefix, "-xzf", archivePath, "-C", extractDir], {
+        timeout: 120_000,
+        maxBuffer: 1_000_000,
+      });
+    } else if (target.archive.endsWith(".zip")) {
+      await extractZip(archivePath, extractDir);
+    } else {
+      // Single binary (es. ollama-darwin)
+      await fs.copyFile(archivePath, path.join(extractDir, target.binary));
+    }
+    const binarySource = await findFileByName(extractDir, target.binary);
+    if (!binarySource) throw new Error("Binario Ollama non trovato nell'archivio");
+    // Ollama ha bisogno delle sue lib/: copio l'intera cartella estratta in una sede permanente
+    const ollamaHome = path.join(BIN_DIR, "ollama-runtime");
+    await fs.rm(ollamaHome, { recursive: true, force: true });
+    await fs.cp(extractDir, ollamaHome, { recursive: true });
+    const destination = (await findFileByName(ollamaHome, target.binary)) || path.join(ollamaHome, "bin", target.binary);
+    await fs.chmod(destination, 0o755).catch(() => {});
+    steps.push({ label: "Installazione binary", ok: true, output: destination });
+
+    // 3) Avvia ollama serve in background
+    await updateProgress("Avvio Ollama", 55, "Server locale su 127.0.0.1:11434");
+    if (activeOllamaServerChild) {
+      try { activeOllamaServerChild.kill("SIGTERM"); } catch { /* ignore */ }
+    }
+    const { spawn } = await import("node:child_process");
+    activeOllamaServerChild = spawn(destination, ["serve"], {
+      cwd: BIN_DIR,
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true,
+      env: { ...process.env, OLLAMA_HOST: "127.0.0.1:11434" },
+    });
+    activeOllamaServerChild.unref();
+    // Attendo che risponda
+    let serverReady = false;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const probe = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
+      if (probe?.ok) { serverReady = true; break; }
+    }
+    if (!serverReady) throw new Error("Server Ollama non risponde su 127.0.0.1:11434");
+    steps.push({ label: "Server Ollama in esecuzione", ok: true, output: "pid " + activeOllamaServerChild.pid });
+
+    // 4) Scarica modello Gemma 3 4B
+    await updateProgress("Scarico Gemma offline", 60, `${OLLAMA_DEFAULT_MODEL} (~3 GB, attendi 5-15 min)`);
+    const pullResp = await fetch(`${OLLAMA_BASE_URL}/api/pull`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: OLLAMA_DEFAULT_MODEL, stream: true }),
+    });
+    if (!pullResp.ok || !pullResp.body) throw new Error(`Pull Gemma fallito: HTTP ${pullResp.status}`);
+    const pullReader = pullResp.body.getReader();
+    const decoder = new TextDecoder();
+    let pullBuffer = "";
+    while (true) {
+      const { done, value } = await pullReader.read();
+      if (done) break;
+      pullBuffer += decoder.decode(value, { stream: true });
+      const lines = pullBuffer.split("\n");
+      pullBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (evt?.total && evt?.completed) {
+            const pct = 60 + Math.floor((evt.completed / evt.total) * 40);
+            await updateProgress("Scarico Gemma offline", Math.min(99, pct), evt.status || "in corso");
+          } else if (evt?.status) {
+            await updateProgress("Scarico Gemma offline", 70, evt.status);
+          }
+        } catch {
+          // riga non JSON
+        }
+      }
+    }
+    steps.push({ label: `Modello ${OLLAMA_DEFAULT_MODEL} scaricato`, ok: true });
+
+    await updateProgress("Pronto", 100, `${OLLAMA_DEFAULT_MODEL} installato e attivo offline`);
+
+    return {
+      ok: true,
+      componentId: "ollama-gemma",
+      message: `Ollama + ${OLLAMA_DEFAULT_MODEL} installati in ${destination}`,
+      steps,
+      components: await localComponentsStatus(await loadState()),
+      durationMs: Date.now() - started,
+    };
+  } catch (err) {
+    await updateProgress("Installazione fallita", 0, String(err?.message || err));
+    return {
+      ok: false,
+      componentId: "ollama-gemma",
+      message: String(err?.message || err),
+      steps,
+      components: await localComponentsStatus(await loadState()),
+    };
+  }
+}
+
+function ollamaDownloadTarget(platform, arch) {
+  const baseUrl = "https://github.com/ollama/ollama/releases/latest/download";
+  if (platform === "linux") {
+    const archName = arch === "arm64" ? "arm64" : "amd64";
+    return { url: `${baseUrl}/ollama-linux-${archName}.tar.zst`, archive: `ollama-linux-${archName}.tar.zst`, binary: "ollama" };
+  }
+  if (platform === "darwin") {
+    return { url: `${baseUrl}/ollama-darwin.tar.zst`, archive: "ollama-darwin.tar.zst", binary: "ollama" };
+  }
+  if (platform === "win32") {
+    const archName = arch === "arm64" ? "arm64" : "amd64";
+    return { url: `${baseUrl}/ollama-windows-${archName}.zip`, archive: `ollama-windows-${archName}.zip`, binary: "ollama.exe" };
+  }
+  return null;
 }
 
 async function installRcloneLocal() {

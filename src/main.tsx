@@ -626,6 +626,7 @@ function App() {
   const [showMentionDropdown, setShowMentionDropdown] = useState<boolean>(false);
   const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
   const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false });
+  const [ollamaInstall, setOllamaInstall] = useState<{ label: string; progress: number; detail?: string; running: boolean } | null>(null);
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
   const [localVisionStatus, setLocalVisionStatus] = useState<LocalVisionStatus | null>(null);
   const [localVisionMessage, setLocalVisionMessage] = useState("Foto e video non ancora preparati");
@@ -724,6 +725,32 @@ function App() {
   useEffect(() => {
     setLocalVisionMessage("Foto e video pronti da preparare");
   }, []);
+
+  // Polling installazione Ollama+Gemma in corso (per la barra di progresso live)
+  useEffect(() => {
+    if (!ollamaInstall?.running) return;
+    let cancelled = false;
+    const tick = async () => {
+      const next = await safeInvoke<{ label: string; progress: number; detail?: string; running: boolean }>(
+        "get_ollama_install_status", {}, { label: "", progress: 0, running: false }
+      );
+      if (cancelled || !next) return;
+      setOllamaInstall(next);
+      if (!next.running) {
+        // Reload provider status (Ollama dovrebbe essere ora online)
+        const status = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
+        if (status) setAiProviderStatus(status);
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 1500);
+    void tick();
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [ollamaInstall?.running]);
+
+  async function installOllamaGemma() {
+    await safeInvoke<{ ok: boolean; started: boolean }>("install_ollama_gemma", {}, { ok: false, started: false });
+    setOllamaInstall({ label: "Avvio...", progress: 1, running: true });
+  }
 
   async function hydrate() {
     const [paths, indexStatus, visionStatus, semantic, components, remoteConnectors, rclone, doctor, models, remoteAccess, simpleStatus, setupJob, aiProvStatus, aiProvConfig] = await Promise.all([
@@ -3757,6 +3784,31 @@ function SettingsPanel({
               <strong>Niente da scaricare per i cloud free:</strong> NVIDIA e Google rispondono via API, gratis nei loro free tier. NVIDIA Nemotron 49B + Llama 3.2 Vision e Gemma 4 27B multimodale (vede immagini) sono attivi senza download.
               <br />Solo Ollama / LM Studio sono modelli che girano interamente offline sul tuo PC e richiedono il download dei pesi (10-50GB) attraverso la loro app.
             </p>
+            {/* Card installazione Gemma offline (auto, nabbi-friendly) */}
+            {!aiProviderStatus?.providers?.find((p) => p.id === "ollama" && p.configured) && (
+              <div className="ai-ollama-callout">
+                <div>
+                  <strong>Vuoi Gemma 4 anche offline (100% privato)?</strong>
+                  <span>Clicco e basta. Trova scarica Ollama (~600MB) + Gemma 3 4B (~3GB) in background. Funziona senza internet dopo l'installazione.</span>
+                </div>
+                {ollamaInstall?.running ? (
+                  <div className="ai-ollama-progress">
+                    <strong>{ollamaInstall.label}</strong>
+                    <span>{ollamaInstall.detail || "in corso..."}</span>
+                    <div className="ai-ollama-bar">
+                      <span style={{ width: `${Math.max(2, Math.min(100, ollamaInstall.progress))}%` }} />
+                    </div>
+                    <em>{ollamaInstall.progress}%</em>
+                  </div>
+                ) : ollamaInstall && !ollamaInstall.running && ollamaInstall.progress === 100 ? (
+                  <div className="ai-ollama-done">✅ {ollamaInstall.detail || "Pronto"}</div>
+                ) : (
+                  <button type="button" className="settings-link-button primary" onClick={() => void installOllamaGemma()}>
+                    Installa Gemma offline (auto)
+                  </button>
+                )}
+              </div>
+            )}
             {!aiProviderStatus?.providers?.find((p) => p.id === "gemini" && p.configured) && (
               <div className="ai-gemini-callout">
                 <div>
