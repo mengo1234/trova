@@ -1938,8 +1938,82 @@ function mimeToImageExtension(mimeType) {
   return "";
 }
 
+/**
+ * Estrae operatori di ricerca dal testo. Supporta (italiano e inglese):
+ *   tipo:|type: documento|immagine|audio|video|codice  (oppure document/image/...)
+ *   estensione:|ext: pdf,docx
+ *   data:|date: 2024  (anno, o >2024 / <2023)
+ *   dimensione:|size: >1mb  <500kb  >2gb
+ * Ritorna { text: querySenzaOperatori, operators: {...} }
+ */
+function parseSearchOperators(raw) {
+  const operators = {};
+  let text = String(raw || "");
+  const opRe = /(tipo|type|estensione|ext|data|date|dimensione|size):\s*([<>]?[^\s]+)/gi;
+  text = text.replace(opRe, (_match, keyRaw, valueRaw) => {
+    const key = keyRaw.toLowerCase();
+    const value = valueRaw.trim();
+    if (key === "tipo" || key === "type") {
+      const map = { documento: "document", document: "document", immagine: "image", image: "image", foto: "image", audio: "audio", video: "video", codice: "code", code: "code" };
+      operators.kind = map[value.toLowerCase()] || value.toLowerCase();
+    } else if (key === "estensione" || key === "ext") {
+      operators.extensions = value.toLowerCase().split(",").map((item) => item.replace(/^\./, "").trim()).filter(Boolean);
+    } else if (key === "data" || key === "date") {
+      operators.date = value;
+    } else if (key === "dimensione" || key === "size") {
+      operators.size = value.toLowerCase();
+    }
+    return " ";
+  });
+  return { text: text.replace(/\s+/g, " ").trim(), operators };
+}
+
+function parseSizeToBytes(token) {
+  const match = String(token || "").match(/^([0-9.]+)\s*(b|kb|mb|gb|tb)?$/i);
+  if (!match) return null;
+  const value = parseFloat(match[1]);
+  const unit = (match[2] || "b").toLowerCase();
+  const mult = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }[unit] || 1;
+  return value * mult;
+}
+
+function matchesSearchOperators(entry, operators) {
+  if (!operators || !Object.keys(operators).length) return true;
+  if (operators.kind && entry.kind !== operators.kind) return false;
+  if (operators.extensions?.length) {
+    const ext = String(entry.extension || "").toLowerCase().replace(/^\./, "");
+    if (!operators.extensions.includes(ext)) return false;
+  }
+  if (operators.date) {
+    const year = entry.modified ? new Date(Number(entry.modified) * (String(entry.modified).length <= 10 ? 1000 : 1)).getFullYear() : null;
+    if (year) {
+      const op = operators.date[0];
+      const wanted = parseInt(operators.date.replace(/[<>]/, ""), 10);
+      if (!Number.isNaN(wanted)) {
+        if (op === ">" && !(year > wanted)) return false;
+        if (op === "<" && !(year < wanted)) return false;
+        if (op !== ">" && op !== "<" && year !== wanted) return false;
+      }
+    }
+  }
+  if (operators.size) {
+    const op = operators.size[0];
+    const bytes = parseSizeToBytes(operators.size.replace(/[<>]/, ""));
+    const fileBytes = Number(entry.size) || 0;
+    if (bytes != null) {
+      if (op === ">" && !(fileBytes > bytes)) return false;
+      if (op === "<" && !(fileBytes < bytes)) return false;
+      if (op !== ">" && op !== "<" && Math.abs(fileBytes - bytes) > bytes * 0.1) return false;
+    }
+  }
+  return true;
+}
+
 async function searchIndex(index, request) {
-  const query = String(request.textQuery || "").trim().toLowerCase();
+  // Parsing operatori: tipo:pdf  data:2024  dimensione:>1mb  estensione:docx
+  const parsed = parseSearchOperators(String(request.textQuery || ""));
+  const query = parsed.text.trim().toLowerCase();
+  const operators = parsed.operators;
   const filters = request.filters || ["all"];
   const imageQueries = [
     ...(Array.isArray(request.imageQueries) ? request.imageQueries : []),
@@ -1961,6 +2035,7 @@ async function searchIndex(index, request) {
   const results = [];
   for (const entry of index) {
     if (!matchesFilter(entry.kind, filters)) continue;
+    if (!matchesSearchOperators(entry, operators)) continue;
     const haystack = `${entry.name} ${entry.filePath} ${entry.extension} ${entry.content}`.toLowerCase();
     const textScore = query ? scoreMatch(haystack, query, entry.name, entry.content, entry.kind) : 0;
     const typesenseScore = typesenseMatches.get(entry.filePath)?.score || 0;
@@ -3765,21 +3840,41 @@ async function probeOpenAiCompatibleEndpoint(url) {
  * Opzioni: provider (auto|nvidia|gemini|ollama|lmstudio), modelKey, tools, maxTokens, temperature.
  */
 async function aiChatComplete({ messages, provider = TROVA_CHAT_PROVIDER, modelKey = TROVA_CHAT_MODEL_KEY, tools = [], maxTokens = 1024, temperature = 0.2 }) {
-  const resolved = await resolveAiProvider(provider, modelKey);
-  if (!resolved) throw new Error("Nessun provider AI configurato. Aggiungi una chiave NVIDIA/Gemini o avvia Ollama/LM Studio.");
-  if (resolved.provider === "nvidia") {
-    return callNvidiaChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+  // Costruisce la catena di tentativi: prima il provider scelto, poi gli altri disponibili (robustezza)
+  const primary = await resolveAiProvider(provider, modelKey);
+  if (!primary) {
+    throw new Error("Nessun provider AI configurato. Vai in Impostazioni > Online: aggiungi una chiave NVIDIA o Gemini, oppure installa Gemma offline con un click.");
   }
-  if (resolved.provider === "gemini") {
-    return callGeminiChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+  const fallbackChain = [primary];
+  // Aggiungi fallback solo se il provider richiesto era 'auto' o non specificato
+  if (provider === "auto" || !provider) {
+    for (const altProvider of ["nvidia", "gemini", "ollama", "lmstudio"]) {
+      if (altProvider === primary.provider) continue;
+      const alt = await resolveAiProvider(altProvider, modelKey).catch(() => null);
+      if (alt) fallbackChain.push(alt);
+    }
   }
-  if (resolved.provider === "ollama") {
-    return callOpenAiCompatibleChat({ baseUrl: OLLAMA_BASE_URL, path: "/v1/chat/completions", apiKey: "ollama", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
+  const errors = [];
+  for (const resolved of fallbackChain) {
+    try {
+      if (resolved.provider === "nvidia") {
+        return await callNvidiaChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+      }
+      if (resolved.provider === "gemini") {
+        return await callGeminiChat({ messages, modelId: resolved.modelId, apiKey: resolved.apiKey, tools, maxTokens, temperature });
+      }
+      if (resolved.provider === "ollama") {
+        return await callOpenAiCompatibleChat({ baseUrl: OLLAMA_BASE_URL, path: "/v1/chat/completions", apiKey: "ollama", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
+      }
+      if (resolved.provider === "lmstudio") {
+        return await callOpenAiCompatibleChat({ baseUrl: LMSTUDIO_BASE_URL, path: "/v1/chat/completions", apiKey: "lmstudio", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
+      }
+    } catch (err) {
+      errors.push(`${resolved.provider}: ${String(err?.message || err).slice(0, 120)}`);
+      // prova il prossimo provider della catena
+    }
   }
-  if (resolved.provider === "lmstudio") {
-    return callOpenAiCompatibleChat({ baseUrl: LMSTUDIO_BASE_URL, path: "/v1/chat/completions", apiKey: "lmstudio", messages, modelId: resolved.modelId, tools, maxTokens, temperature });
-  }
-  throw new Error(`Provider sconosciuto: ${resolved.provider}`);
+  throw new Error(`Tutti i provider AI hanno fallito. ${errors.join(" · ")}`);
 }
 
 async function resolveAiProvider(requested, modelKey) {
