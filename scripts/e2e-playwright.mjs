@@ -62,7 +62,7 @@ try {
   const askInput = page.locator(".local-ask-row input").first();
   if (await askInput.count() > 0) {
     await askInput.fill("Ciao, cosa sai fare?");
-    await page.locator(".local-ask-row button").first().click();
+    await page.locator(".local-ask-row button", { hasText: "Chiedi" }).first().click();
     // Attendo risposta AI (streaming) fino a 30s
     await page.waitForFunction(() => {
       const msgs = document.querySelectorAll(".local-chat-message.assistant");
@@ -93,10 +93,10 @@ try {
   await page.waitForTimeout(600);
   check(await page.locator(".settings-ai-models").count() > 0, "Tab Online ha sezione Modello AI");
   await page.screenshot({ path: `${SHOT_DIR}/06-settings-ai.png` });
-  // Tab Avanzate -> hotkey
-  await page.getByRole("button", { name: "Avanzate", exact: true }).click().catch(() => {});
+  // Tab Dettagli tecnici (advanced) -> hotkey
+  await page.getByRole("button", { name: "Dettagli tecnici", exact: true }).first().click().catch(() => {});
   await page.waitForTimeout(600);
-  check(await page.locator(".hotkey-capture").count() > 0, "Tab Avanzate ha config hotkey globale");
+  check(await page.locator(".hotkey-capture").count() > 0, "Tab Dettagli tecnici ha config hotkey globale");
   await page.screenshot({ path: `${SHOT_DIR}/07-settings-hotkey.png` });
 
   // ===== 7. SPOTLIGHT =====

@@ -815,7 +815,11 @@ function App() {
 
   async function saveHotkey(next: { shortcut: string; mode: string; enabled: boolean }) {
     setHotkeyConfig(next);
-    const result = await safeInvoke<{ shortcut: string; mode: string; enabled: boolean } | null>(
+    if (!hasTauriBackend()) {
+      // In modalita web/dev la hotkey globale non esiste: salvo solo la preferenza UI
+      return;
+    }
+    const result = await desktopInvoke<{ shortcut: string; mode: string; enabled: boolean } | null>(
       "set_global_hotkey", { shortcut: next.shortcut, mode: next.mode, enabled: next.enabled }, null
     );
     if (result) setHotkeyConfig(result);
@@ -847,7 +851,7 @@ function App() {
     if (aiProvStatus) setAiProviderStatus(aiProvStatus);
     if (aiProvConfig) setAiProviderConfig({ provider: aiProvConfig.provider || "auto", modelKey: aiProvConfig.modelKey || "nemotron-super-49b", agentEnabled: Boolean(aiProvConfig.agentEnabled) });
     void loadPinnedDocuments();
-    const hk = await safeInvoke<{ shortcut: string; mode: string; enabled: boolean }>("get_global_hotkey", {}, { shortcut: "", mode: "spotlight", enabled: false });
+    const hk = await desktopInvoke<{ shortcut: string; mode: string; enabled: boolean }>("get_global_hotkey", {}, { shortcut: "", mode: "spotlight", enabled: false });
     if (hk) setHotkeyConfig(hk);
     setWatchPaths(paths.length ? paths : fallbackWatchPaths);
     setStatus(indexStatus);
@@ -5531,6 +5535,17 @@ async function safeInvoke<T>(command: string, args: Record<string, unknown>, fal
   }
 }
 
+// Comandi gestiti SOLO da Rust (hotkey globale, finestra spotlight): non passano
+// dal backend HTTP. In modalita web (no Tauri) ritornano il fallback senza errori 500.
+async function desktopInvoke<T>(command: string, args: Record<string, unknown>, fallback: T): Promise<T> {
+  if (!hasTauriBackend()) return fallback;
+  try {
+    return await tauriInvokeRaw<T>(command, args);
+  } catch {
+    return fallback;
+  }
+}
+
 let desktopLocalApiBoot: Promise<LocalApiBootStatus | null> | null = null;
 
 async function tauriInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -5707,7 +5722,7 @@ function SpotlightSearch() {
     document.documentElement.classList.toggle("dark", window.localStorage.getItem("trova.theme") === "dark");
     inputRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") void safeInvoke("hide_spotlight_window", {}, null);
+      if (event.key === "Escape") void desktopInvoke("hide_spotlight_window", {}, null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -5729,7 +5744,7 @@ function SpotlightSearch() {
 
   const openFile = (item: IndexedFile) => {
     void safeInvoke("open_in_folder", { path: item.path }, null);
-    void safeInvoke("hide_spotlight_window", {}, null);
+    void desktopInvoke("hide_spotlight_window", {}, null);
   };
 
   return (
