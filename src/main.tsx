@@ -1241,7 +1241,27 @@ function App() {
     }
     setIsLocalAskBusy(true);
     setError("");
-    const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: question, createdAt: Date.now() }];
+    // Se c'e un file caricato nella search box, includilo come contesto per l'AI
+    let contextNote = "";
+    if (imageQueryFile) {
+      try {
+        const name = imageQueryFile.name;
+        const isText = /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(name)
+          || imageQueryFile.type.startsWith("text/")
+          || imageQueryFile.type === "application/json";
+        if (isText) {
+          const textContent = await imageQueryFile.text();
+          const truncated = textContent.slice(0, 8000);
+          contextNote = `\n\nFile caricato dall'utente: ${name}\n\`\`\`\n${truncated}${textContent.length > 8000 ? "\n[...troncato]" : ""}\n\`\`\``;
+        } else {
+          contextNote = `\n\nFile caricato dall'utente: ${name} (${imageQueryFile.type || "binario"}, ${Math.round(imageQueryFile.size / 1024)} KB). Usa la ricerca per immagine se serve confrontarlo con altri file dell'indice.`;
+        }
+      } catch (readErr) {
+        contextNote = `\n\nFile caricato dall'utente: ${imageQueryFile.name} (lettura non riuscita: ${shortError(readErr)}).`;
+      }
+    }
+    const enrichedQuestion = contextNote ? `${question}${contextNote}` : question;
+    const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: enrichedQuestion, createdAt: Date.now() }];
     setChatMessages(nextHistory);
     setLocalQuestion("");
     try {
@@ -1743,32 +1763,49 @@ function App() {
           {!showSettings && (
             <div className="search-row">
               <LiquidGlassSurface variant="search">
-                <div className="search-box">
+                <div className={`search-box ${imageQueryPreview ? "with-attachment" : ""}`}>
                   <GeneratedIcon name="search" size={28} />
                   <input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") void runLocalSearch();
+                      if (event.key === "Enter") {
+                        const text = query.trim();
+                        if (imageQueryPreview && text) {
+                          // File caricato + testo: domanda all'AI sul file
+                          setLocalQuestion(text);
+                          void askLocalFiles();
+                        } else {
+                          // Comportamento classico: ricerca testo / per immagine
+                          void runLocalSearch();
+                        }
+                      }
                     }}
-                    placeholder="Cerca testo, oppure carica una foto..."
+                    placeholder={imageQueryPreview
+                      ? `Chiedi qualcosa su ${imageQueryFile?.name || "questo file"}, oppure premi Invio per cercare simili...`
+                      : "Cerca testo, oppure carica un file e fai una domanda..."}
                   />
                   <button className="icon-button" onClick={clearImageQuery} aria-label="Svuota">
                     <X size={20} />
                   </button>
                   <i />
-                  <button className="icon-button" onClick={() => imageQueryInput.current?.click()} aria-label="Cerca per immagine">
+                  <button className="icon-button" onClick={() => imageQueryInput.current?.click()} aria-label="Carica file o foto">
                     <GeneratedIcon name="vision" size={24} />
                   </button>
                   <input
                     ref={imageQueryInput}
                     className="hidden-input"
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown,.md,.txt,.docx,.doc"
                     onChange={(event) => void uploadImageQuery(event.currentTarget.files)}
                   />
                 </div>
               </LiquidGlassSurface>
+              {imageQueryPreview && (
+                <div className="search-box-attachment-hint" role="status">
+                  📎 {imageQueryFile?.name || "file caricato"} — scrivi la domanda e premi Invio per chiedere all'AI
+                </div>
+              )}
             </div>
           )}
 

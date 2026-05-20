@@ -3568,6 +3568,24 @@ button:active {
     border-color 180ms ease;
 }
 
+.search-box.with-attachment {
+  box-shadow: 0 0 0 2px rgba(155, 105, 255, 0.45);
+}
+
+.search-box-attachment-hint {
+  margin: 6px auto 0;
+  padding: 4px 12px;
+  width: max-content;
+  max-width: calc(100vw - 60px);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b21b6;
+  background: rgba(155, 105, 255, 0.12);
+  border: 1px solid rgba(155, 105, 255, 0.32);
+  letter-spacing: 0.01em;
+}
+
 .search-box::before {
   display: none;
   content: none;
