@@ -10487,3 +10487,17 @@ mark {
   background-image: none !important;
   border-color: rgba(120,135,160,0.25);
 }
+
+/* ===== FIX impostazioni: 9 tab (funzioni AI in più) non devono sforare dietro la barra in basso ===== */
+.settings-panel .settings-tabs {
+  grid-template-rows: none !important;
+  grid-auto-rows: min-content;
+  overflow-y: auto;
+  align-content: start;
+  scrollbar-width: thin;
+}
+.settings-panel .settings-tabs::before { display: none !important; }
+.settings-panel .settings-tabs button:last-child {
+  margin-top: 0 !important;
+  align-self: auto !important;
+}

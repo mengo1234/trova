@@ -2082,6 +2082,18 @@ function App() {
             setShowAddFolderDialog(false);
           }}
           onConfirm={() => void confirmAddPath()}
+          searchValue={query}
+          onSearchValueChange={setQuery}
+          onSearchSubmit={(value) => {
+            const nextQuery = value.trim();
+            setQuery(nextQuery);
+            setShowAddFolderDialog(false);
+            void runLocalSearch(undefined, "text", nextQuery);
+          }}
+          onOpenSearch={() => { setShowAddFolderDialog(false); setShowSettings(false); }}
+          onOpenFolders={() => { setShowAddFolderDialog(false); setShowSettings(true); }}
+          onOpenSettings={() => { setShowAddFolderDialog(false); setShowSettings(true); }}
+          onOpenHelp={() => { setShowAddFolderDialog(false); setShowSetup(true); }}
           canBrowse={desktopBackendAvailable}
           isPicking={isPickingFolder}
           onAddUsbConnected={() => void addConnectedUsbPath()}
@@ -2418,6 +2430,7 @@ function App() {
                 void runLocalSearch(undefined, "text", nextQuery);
               }}
               onCloseSettings={() => setShowSettings(false)}
+              onOpenAddFolder={() => { setShowSettings(false); addPath(); }}
             />
           ) : (
             <>
@@ -2521,6 +2534,13 @@ function AddFolderDialog({
   onChange,
   onClose,
   onConfirm,
+  searchValue,
+  onSearchValueChange,
+  onSearchSubmit,
+  onOpenSearch,
+  onOpenFolders,
+  onOpenSettings,
+  onOpenHelp,
   canBrowse,
   isPicking,
   onBrowse,
@@ -2531,11 +2551,19 @@ function AddFolderDialog({
   onChange: (value: string) => void;
   onClose: () => void;
   onConfirm: () => void;
+  searchValue: string;
+  onSearchValueChange: (value: string) => void;
+  onSearchSubmit: (value: string) => void;
+  onOpenSearch: () => void;
+  onOpenFolders: () => void;
+  onOpenSettings: () => void;
+  onOpenHelp: () => void;
   canBrowse: boolean;
   isPicking: boolean;
   onBrowse: () => void | Promise<void>;
   onAddUsbConnected: () => void | Promise<void>;
 }) {
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const suggestions = [
     { path: "/home/fabio", label: "Tutto il mio PC", icon: "database" as GeneratedIconName },
     { path: "/home/fabio/Documents", label: "Documents", icon: "document" as GeneratedIconName },
@@ -2558,42 +2586,40 @@ function AddFolderDialog({
           </div>
           <div className="add-folder-searchbar">
             <Search size={18} />
-            <span>Cerca in Trova...</span>
+            <input
+              value={searchValue}
+              onChange={(event) => onSearchValueChange(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onSearchSubmit(event.currentTarget.value);
+                if (event.key === "Escape") onOpenSearch();
+              }}
+              placeholder="Cerca in Trova..."
+              aria-label="Cerca in Trova"
+            />
             <kbd>Ctrl + K</kbd>
           </div>
-          <button type="button" className="add-folder-icon-btn" aria-label="Impostazioni">
+          <button type="button" className="add-folder-icon-btn" aria-label="Impostazioni" onClick={onOpenSettings}>
             <Settings size={20} />
           </button>
-          <div className="add-folder-window-controls" aria-hidden="true">
-            <span><Minus size={16} /></span>
-            <span><Square size={15} /></span>
-            <button type="button" onClick={onClose} aria-label="Chiudi">
-              <X size={18} />
-            </button>
-          </div>
         </header>
 
         <div className="add-folder-color-line" aria-hidden="true">
-          <i /><i /><i /><i />
+          <i /><i /><i /><i /><i />
         </div>
 
         <div className="add-folder-body">
           <aside className="add-folder-sidebar" aria-label="Navigazione Trova">
             <nav className="add-folder-side-nav">
-              <button type="button" className="active"><Home size={20} /><span>Home</span></button>
-              <button type="button"><Search size={20} /><span>Ricerca</span></button>
-              <button type="button"><Folder size={20} /><span>Cartelle</span></button>
-              <button type="button"><Star size={20} /><span>Preferiti</span></button>
-              <button type="button"><Clock3 size={20} /><span>Recenti</span></button>
-              <button type="button"><Settings size={20} /><span>Impostazioni</span></button>
+              <button type="button" onClick={onOpenSearch}><Search size={20} /><span>Ricerca</span></button>
+              <button type="button" onClick={onOpenFolders}><Folder size={20} /><span>Cartelle</span></button>
+              <button type="button" onClick={onOpenSettings}><Settings size={20} /><span>Impostazioni</span></button>
             </nav>
-            <button type="button" className="add-folder-side-cta">
+            <button type="button" className="add-folder-side-cta active" onClick={() => folderInputRef.current?.focus()}>
               <PlusCircle size={20} />
               <span>Aggiungi cartella</span>
             </button>
             <div className="add-folder-side-footer">
-              <button type="button"><HelpCircle size={18} /><span>Guida</span></button>
-              <button type="button"><MessageSquare size={18} /><span>Feedback</span></button>
+              <button type="button" onClick={onOpenHelp}><HelpCircle size={18} /><span>Guida</span></button>
             </div>
             <div className="add-folder-index-card">
               <span><i />Indicizzazione attiva</span>
@@ -2618,6 +2644,7 @@ function AddFolderDialog({
                 <label className="add-folder-field">
                   <span>Percorso cartella</span>
                   <input
+                    ref={folderInputRef}
                     value={value}
                     onChange={(event) => onChange(event.currentTarget.value)}
                     onKeyDown={(event) => {
@@ -2692,6 +2719,20 @@ function AddFolderDialog({
           </div>
         </div>
       </section>
+      <nav className="app-bottom-nav add-folder-bottom-nav" aria-label="Azioni principali" onClick={(event) => event.stopPropagation()}>
+        <button type="button" onClick={onOpenSearch}>
+          <Search className="material-line-icon" size={22} />
+          <span>Cerca</span>
+        </button>
+        <button type="button" className="active" onClick={() => folderInputRef.current?.focus()}>
+          <Folder className="material-line-icon" size={22} />
+          <span>Aggiungi cartella</span>
+        </button>
+        <button type="button" onClick={onOpenSettings}>
+          <Settings className="material-line-icon" size={22} />
+          <span>Impostazioni</span>
+        </button>
+      </nav>
     </div>
   );
 }
@@ -3536,6 +3577,7 @@ function SettingsPanel({
   onSearchValueChange = () => {},
   onSearchSubmit = () => {},
   onCloseSettings = () => {},
+  onOpenAddFolder = () => {},
 }: {
   paths: WatchPath[];
   status: IndexStatus | null;
@@ -3595,6 +3637,7 @@ function SettingsPanel({
   onSearchValueChange?: (value: string) => void;
   onSearchSubmit?: (value: string) => void;
   onCloseSettings?: () => void;
+  onOpenAddFolder?: () => void;
 }) {
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
@@ -3632,6 +3675,7 @@ function SettingsPanel({
   const missingComponents = localComponents.filter((item) => !item.installed);
 
   return (
+    <>
     <section className="settings-panel settings-console">
       <div className="settings-head">
         <div className="settings-brand">
@@ -4473,6 +4517,21 @@ function SettingsPanel({
         </div>
       )}
     </section>
+      <nav className="app-bottom-nav settings-bottom-nav" aria-label="Azioni principali">
+        <button type="button" onClick={onCloseSettings}>
+          <Search className="material-line-icon" size={22} />
+          <span>Cerca</span>
+        </button>
+        <button type="button" onClick={onOpenAddFolder}>
+          <Folder className="material-line-icon" size={22} />
+          <span>Aggiungi cartella</span>
+        </button>
+        <button type="button" className="active">
+          <Settings className="material-line-icon" size={22} />
+          <span>Impostazioni</span>
+        </button>
+      </nav>
+    </>
   );
 }
 
