@@ -8406,3 +8406,182 @@ mark {
     height: 66px;
   }
 }
+
+/* ===== CRONOLOGIA (file aperti di recente) ===== */
+.home-recent-panel {
+  width: min(860px, 100%);
+  display: grid;
+  gap: 12px;
+  text-align: left;
+}
+.home-recent-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 4px;
+}
+.home-recent-head strong {
+  color: #202124;
+  font-size: 18px;
+  font-weight: 760;
+}
+.home-recent-head span {
+  color: rgba(60, 64, 67, 0.72);
+  font-size: 13px;
+}
+.home-recent-carousel {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(168px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 2px 2px 8px;
+  scrollbar-width: none;
+}
+.home-recent-carousel::-webkit-scrollbar {
+  display: none;
+}
+.home-recent-card {
+  min-width: 0;
+  min-height: 178px;
+  display: grid;
+  grid-template-rows: 86px auto auto;
+  justify-items: center;
+  align-items: start;
+  gap: 8px;
+  border: 1px solid rgba(218, 224, 234, 0.84);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #202124;
+  padding: 14px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 14px 32px rgba(39, 55, 77, 0.08);
+  backdrop-filter: blur(18px) saturate(1.12);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+}
+.home-recent-card:hover {
+  border-color: rgba(47, 111, 237, 0.34);
+  background: rgba(255, 255, 255, 0.92);
+  transform: translateY(-1px);
+}
+.home-recent-thumb {
+  width: 86px;
+  height: 86px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(218, 224, 234, 0.76);
+}
+.home-recent-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.home-recent-name {
+  width: 100%;
+  overflow: hidden;
+  color: #202124;
+  font-size: 14px;
+  font-weight: 720;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-recent-card small {
+  width: 100%;
+  overflow: hidden;
+  color: rgba(60, 64, 67, 0.66);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root.dark .home-recent-head strong,
+:root.dark .home-recent-name { color: #e3e3e6; }
+:root.dark .home-recent-head span,
+:root.dark .home-recent-card small { color: #9aa0a6; }
+:root.dark .home-recent-card {
+  background: rgba(34, 38, 46, 0.92);
+  border-color: rgba(120, 135, 160, 0.22);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.4);
+}
+:root.dark .home-recent-card:hover { background: rgba(40, 44, 52, 0.96); border-color: rgba(120, 145, 220, 0.42); }
+:root.dark .home-recent-thumb { background: rgba(28, 32, 40, 0.9); box-shadow: inset 0 0 0 1px rgba(120, 135, 160, 0.25); }
+
+/* ===== CHIAVETTA COLLEGATA (Aggiungi cartella) ===== */
+.add-folder-usb-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.add-folder-usb-btn {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(47, 111, 237, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #1f4fae;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.add-folder-usb-btn:hover { background: rgba(232, 240, 254, 0.86); }
+.add-folder-usb-btn:disabled { opacity: 0.6; cursor: default; }
+.add-folder-usb-row small { color: rgba(60, 64, 67, 0.72); font-size: 12px; }
+:root.dark .add-folder-usb-btn {
+  background: rgba(34, 38, 46, 0.92);
+  border-color: rgba(120, 145, 220, 0.42);
+  color: #aec6ff;
+}
+:root.dark .add-folder-usb-btn:hover { background: rgba(40, 44, 52, 0.96); }
+:root.dark .add-folder-usb-row small { color: #9aa0a6; }
+
+/* ===== SETTINGS OVERVIEW: card bianche piatte (no gradienti/trasparenze) ===== */
+.settings-panel .overview-hero,
+.settings-panel .overview-hero.ready,
+.settings-panel .overview-hero.running,
+.settings-panel .overview-hero.attention,
+.settings-panel .overview-metric-card,
+.settings-panel .overview-summary-card,
+.settings-panel .overview-actions-card {
+  border: 1px solid #e8eaed;
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none;
+}
+.settings-panel .overview-shield {
+  background: #f4f7f9;
+  box-shadow: none;
+}
+.settings-panel .overview-hero-progress {
+  background: #eef0f3;
+}
+.settings-panel .overview-provider-line span {
+  background: #ffffff;
+  box-shadow: none;
+}
+:root.dark .settings-panel .overview-hero,
+:root.dark .settings-panel .overview-hero.ready,
+:root.dark .settings-panel .overview-hero.running,
+:root.dark .settings-panel .overview-hero.attention,
+:root.dark .settings-panel .overview-metric-card,
+:root.dark .settings-panel .overview-summary-card,
+:root.dark .settings-panel .overview-actions-card {
+  background: rgba(34, 38, 46, 0.92) !important;
+  background-image: none !important;
+  border-color: rgba(120, 135, 160, 0.22);
+  box-shadow: none;
+}
+:root.dark .settings-panel .overview-shield { background: rgba(28, 32, 40, 0.9); }
+:root.dark .settings-panel .overview-provider-line span { background: rgba(28, 32, 40, 0.9); }

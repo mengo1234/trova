@@ -580,6 +580,19 @@ const setupPreviewScreens = [
   { label: "Vista completa", image: setupAppMockupWide },
 ];
 
+const RECENT_FILES_KEY = "trova.recentFiles";
+
+function readRecentFiles(): IndexedFile[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_FILES_KEY) ?? "[]");
+    return Array.isArray(parsed)
+      ? (parsed.filter((item) => item?.id && item?.path && item?.name).slice(0, 12) as IndexedFile[])
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function App() {
   const desktopBackendAvailable = hasTauriBackend();
   const forceTutorial = new URLSearchParams(window.location.search).has("tutorial");
@@ -588,6 +601,7 @@ function App() {
   const [mode, setMode] = useState<SearchMode>("text");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [results, setResults] = useState<IndexedFile[]>([]);
+  const [recentFiles, setRecentFiles] = useState<IndexedFile[]>(readRecentFiles);
   const [watchPaths, setWatchPaths] = useState<WatchPath[]>(fallbackWatchPaths);
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -722,6 +736,18 @@ function App() {
     });
   }, [filter, results]);
   const hasSearchIntent = Boolean(query.trim() || imageQueryPreview || results.length);
+
+  function rememberRecentFile(item: IndexedFile) {
+    setRecentFiles((current) => {
+      const next = [item, ...current.filter((recent) => recent.path !== item.path)].slice(0, 12);
+      try {
+        window.localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore quota errors */
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     void hydrate();
@@ -1235,6 +1261,18 @@ function App() {
 
   async function confirmAddPath() {
     await addSelectedPath(folderDraft);
+  }
+
+  async function addConnectedUsbPath() {
+    playUiSound("open");
+    setFolderDraftError("");
+    if (!hasTauriBackend()) {
+      setFolderDraftError("Questa azione funziona nell'app desktop con chiavetta collegata.");
+      return;
+    }
+    const selected = await pickFolderFromDesktop();
+    if (!selected) return;
+    await addSelectedPath(selected);
   }
 
   async function indexConfiguredPaths() {
@@ -2046,6 +2084,7 @@ function App() {
           onConfirm={() => void confirmAddPath()}
           canBrowse={desktopBackendAvailable}
           isPicking={isPickingFolder}
+          onAddUsbConnected={() => void addConnectedUsbPath()}
           onBrowse={async () => {
             playUiSound("open");
             if (!desktopBackendAvailable) {
@@ -2409,6 +2448,7 @@ function App() {
                       index={index}
                       query={query}
                       nvidiaEnabled={nvidiaCloudEnabled}
+                      onOpen={rememberRecentFile}
                     />
                   ))}
                 </section>
@@ -2420,6 +2460,8 @@ function App() {
                   localVisionBusy={isLocalVisionBusy}
                   geminiStatus={geminiStatus}
                   nvidiaStatus={nvidiaStatus}
+                  recentFiles={recentFiles}
+                  nvidiaEnabled={nvidiaCloudEnabled}
                   onPrepareFiles={indexConfiguredPaths}
                   onPrepareVision={indexLocalVisionAssets}
                   onSettings={() => setShowSettings(true)}
@@ -2473,6 +2515,7 @@ function AddFolderDialog({
   canBrowse,
   isPicking,
   onBrowse,
+  onAddUsbConnected,
 }: {
   value: string;
   error: string;
@@ -2482,6 +2525,7 @@ function AddFolderDialog({
   canBrowse: boolean;
   isPicking: boolean;
   onBrowse: () => void | Promise<void>;
+  onAddUsbConnected: () => void | Promise<void>;
 }) {
   const suggestions = [
     { path: "/home/fabio", label: "Tutto il mio PC", icon: "database" as GeneratedIconName },
@@ -2584,6 +2628,14 @@ function AddFolderDialog({
                   <GeneratedIcon name="folder" size={22} />
                   <span>{isPicking ? "Apro selettore..." : "Scegli dal PC"}</span>
                 </button>
+              </div>
+
+              <div className="add-folder-usb-row">
+                <button type="button" className="add-folder-usb-btn" onClick={() => void onAddUsbConnected()} disabled={isPicking}>
+                  <HardDrive size={18} />
+                  <span>{isPicking ? "Cerco chiavetta..." : "Chiavetta collegata"}</span>
+                </button>
+                <small>Aggiunge la cartella scelta con tutte le sottocartelle.</small>
               </div>
 
               <div className="add-folder-suggestions" aria-label="Percorsi rapidi">
@@ -3003,6 +3055,8 @@ function HomeCommandCenter({
   localVisionBusy,
   geminiStatus,
   nvidiaStatus,
+  recentFiles,
+  nvidiaEnabled,
   onPrepareFiles,
   onPrepareVision,
   onSettings,
@@ -3014,6 +3068,8 @@ function HomeCommandCenter({
   localVisionBusy: boolean;
   geminiStatus: string;
   nvidiaStatus: string;
+  recentFiles: IndexedFile[];
+  nvidiaEnabled: boolean;
   onPrepareFiles: () => void | Promise<void>;
   onPrepareVision: () => void | Promise<void>;
   onSettings: () => void;
@@ -3092,33 +3148,7 @@ function HomeCommandCenter({
         </div>
       </article>
 
-      <article className="home-prep-stack">
-        <div className="home-prep-row">
-          <div className="home-status-icon image">
-            <GeneratedIcon name="image" size={42} />
-          </div>
-          <div>
-            <strong>Foto e video</strong>
-            <span>{visionStatus}</span>
-            <small>{localVisionMessage}</small>
-          </div>
-          <button onClick={onPrepareVision} disabled={localVisionBusy}>
-            {localVisionBusy ? "Preparo" : "Prepara"}
-          </button>
-        </div>
-        <div className="home-prep-divider" />
-        <div className="home-prep-row">
-          <div className="home-status-icon cloud">
-            <Cloud size={34} />
-          </div>
-          <div>
-            <strong>Online</strong>
-            <span>{onlineConfigured ? "Google o NVIDIA configurati" : "Google e NVIDIA spenti"}</span>
-            <small>{onlineConfigured ? `${geminiStatus} · ${nvidiaStatus}` : "Resta tutto locale finche non lo scegli."}</small>
-          </div>
-          <button className="secondary" onClick={onSettings}>Configura</button>
-        </div>
-      </article>
+      {recentFiles.length > 0 && <HomeRecentCarousel items={recentFiles} nvidiaEnabled={nvidiaEnabled} />}
 
       {status?.running && (
         <button className="home-command-primary" onClick={onPrepareFiles} disabled>
@@ -3127,6 +3157,57 @@ function HomeCommandCenter({
         </button>
       )}
     </section>
+  );
+}
+
+function HomeRecentCarousel({ items, nvidiaEnabled }: { items: IndexedFile[]; nvidiaEnabled: boolean }) {
+  return (
+    <section className="home-recent-panel" aria-label="Cronologia file aperti">
+      <div className="home-recent-head">
+        <strong>Cronologia</strong>
+        <span>File aperti da Trova</span>
+      </div>
+      <div className="home-recent-carousel">
+        {items.map((item) => (
+          <HomeRecentCard key={`${item.id}-${item.path}`} item={item} nvidiaEnabled={nvidiaEnabled} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HomeRecentCard({ item, nvidiaEnabled }: { item: IndexedFile; nvidiaEnabled: boolean }) {
+  const [previewSrc, setPreviewSrc] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const icon = iconFor(item);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewSrc("");
+    if (!item.visual_preview) return;
+    void tauriInvoke<string>("read_image_data_url", { path: item.visual_preview })
+      .then((dataUrl) => {
+        if (!cancelled) setPreviewSrc(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewSrc("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.visual_preview]);
+
+  return (
+    <>
+      <button type="button" className="home-recent-card" onClick={() => setPreviewOpen(true)}>
+        <span className={`home-recent-thumb ${item.kind}`}>
+          {previewSrc ? <img src={previewSrc} alt="" /> : <GeneratedIcon name={icon} size={38} />}
+        </span>
+        <span className="home-recent-name">{item.name}</span>
+        <small>{displayPathName(item.path)}</small>
+      </button>
+      {previewOpen && <FilePreviewModal item={item} nvidiaEnabled={nvidiaEnabled} onClose={() => setPreviewOpen(false)} />}
+    </>
   );
 }
 
@@ -4867,16 +4948,22 @@ function ResultRow({
   index,
   query,
   nvidiaEnabled,
+  onOpen,
 }: {
   item: IndexedFile;
   index: number;
   query: string;
   nvidiaEnabled: boolean;
+  onOpen?: (item: IndexedFile) => void;
 }) {
   const icon = iconFor(item);
   const sourceLabel = sourceLabelForResult(item);
   const sourceClass = item.source === "gemini" ? "gemini" : item.sourceType === "remote" ? "remote" : "local";
   const [previewOpen, setPreviewOpen] = useState(false);
+  const openPreview = () => {
+    onOpen?.(item);
+    setPreviewOpen(true);
+  };
 
   return (
     <>
@@ -4885,11 +4972,11 @@ function ResultRow({
       style={{ animationDelay: `${index * 40}ms` }}
       role="button"
       tabIndex={0}
-      onClick={() => setPreviewOpen(true)}
+      onClick={openPreview}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          setPreviewOpen(true);
+          openPreview();
         }
       }}
     >
@@ -5743,6 +5830,13 @@ function SpotlightSearch() {
   }, [q]);
 
   const openFile = (item: IndexedFile) => {
+    try {
+      const current = readRecentFiles();
+      const next = [item, ...current.filter((recent) => recent.path !== item.path)].slice(0, 12);
+      window.localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
     void safeInvoke("open_in_folder", { path: item.path }, null);
     void desktopInvoke("hide_spotlight_window", {}, null);
   };
