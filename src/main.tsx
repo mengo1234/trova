@@ -2027,14 +2027,14 @@ function App() {
   }
 
   return (
-    <main className="window">
+    <main className={`window ${showSettings ? "settings-mode" : ""}`}>
       <header className="titlebar">
         <div className="app-title">
           <span className="google-mark" />
           <span>Trova</span>
         </div>
         <button className="title-action" onClick={() => setShowSettings((value) => !value)}>
-          <GeneratedIcon name="settings" size={22} />
+          <Settings className="material-line-icon" size={22} />
           <span>Impostazioni</span>
         </button>
       </header>
@@ -2207,7 +2207,7 @@ function App() {
                     addAttachedFiles(event.dataTransfer?.files || null);
                   }}
                 >
-                  <GeneratedIcon name="search" size={28} />
+                  <Search className="material-line-icon search-material-icon" size={25} />
                   <input
                     ref={searchInputRef}
                     value={query}
@@ -2409,6 +2409,15 @@ function App() {
                 const next = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
                 if (next) setAiProviderStatus(next);
               }}
+              searchValue={query}
+              onSearchValueChange={setQuery}
+              onSearchSubmit={(value) => {
+                const nextQuery = value.trim();
+                setQuery(nextQuery);
+                setShowSettings(false);
+                void runLocalSearch(undefined, "text", nextQuery);
+              }}
+              onCloseSettings={() => setShowSettings(false)}
             />
           ) : (
             <>
@@ -2480,15 +2489,15 @@ function App() {
               {!hasSearchIntent && (
                 <nav className="home-dock" aria-label="Azioni rapide">
                   <button className="active" type="button">
-                    <GeneratedIcon name="search" size={22} />
+                    <Search className="material-line-icon" size={22} />
                     <span>Cerca</span>
                   </button>
                   <button type="button" onClick={addPath}>
-                    <GeneratedIcon name="folder" size={22} />
+                    <Folder className="material-line-icon" size={22} />
                     <span>Aggiungi cartella</span>
                   </button>
                   <button type="button" onClick={() => setShowSettings(true)}>
-                    <GeneratedIcon name="settings" size={22} />
+                    <Settings className="material-line-icon" size={22} />
                     <span>Impostazioni</span>
                   </button>
                 </nav>
@@ -3104,6 +3113,18 @@ function HomeCommandCenter({
 
   return (
     <section className="home-command-center" aria-label="Stato ricerca Trova">
+      <div className="home-feature-carousel" aria-label="Cosa puo cercare Trova">
+        {setupStoryCards.slice(0, 4).map((card) => (
+          <article className="home-feature-slide" key={card.title}>
+            <img src={card.image} alt="" aria-hidden="true" />
+            <div>
+              <strong>{card.title}</strong>
+              <span>{card.text}</span>
+            </div>
+          </article>
+        ))}
+      </div>
+
       {(autoSetupRunning || autoSetupFailed) && (
         <article className={`home-autosetup-banner ${autoSetupFailed ? "failed" : "running"}`} role="status" aria-live="polite">
           <div className="home-autosetup-icon">
@@ -3511,6 +3532,10 @@ function SettingsPanel({
   ollamaInstall,
   onInstallOllamaGemma,
   onReloadAiStatus,
+  searchValue = "",
+  onSearchValueChange = () => {},
+  onSearchSubmit = () => {},
+  onCloseSettings = () => {},
 }: {
   paths: WatchPath[];
   status: IndexStatus | null;
@@ -3566,6 +3591,10 @@ function SettingsPanel({
   ollamaInstall: { label: string; progress: number; detail?: string; running: boolean } | null;
   onInstallOllamaGemma: () => void;
   onReloadAiStatus?: () => void;
+  searchValue?: string;
+  onSearchValueChange?: (value: string) => void;
+  onSearchSubmit?: (value: string) => void;
+  onCloseSettings?: () => void;
 }) {
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
@@ -3605,18 +3634,43 @@ function SettingsPanel({
   return (
     <section className="settings-panel settings-console">
       <div className="settings-head">
-        <div>
-          <span className="settings-eyebrow">Trova semplice</span>
-          <h2>Impostazioni</h2>
-          <p>Scegli dove cercare. Trova prepara il resto da solo e ti avvisa solo quando serve una conferma.</p>
+        <div className="settings-brand">
+          <span className="google-mark" />
+          <strong>Impostazioni</strong>
         </div>
+        <div className="settings-head-search">
+          <Search className="material-line-icon search-material-icon" size={22} />
+          <input
+            value={searchValue}
+            onChange={(event) => onSearchValueChange(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSearchSubmit(event.currentTarget.value);
+            }}
+            placeholder="Cerca in Trova..."
+            aria-label="Cerca in Trova"
+          />
+          <button type="button" aria-label="Svuota ricerca" onClick={() => onSearchValueChange("")}>
+            <X size={18} />
+          </button>
+        </div>
+        <button type="button" className="settings-head-icon" aria-label="Torna alla ricerca" onClick={onCloseSettings}>
+          <Search className="material-line-icon" size={22} />
+        </button>
       </div>
 
       <nav className="settings-tabs" aria-label="Sezioni impostazioni">
         {settingsTabs.map((tab) => {
           return (
             <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}>
-              <GeneratedIcon name={tab.icon} size={20} />
+              {tab.id === "overview" && <Database className="material-line-icon" size={20} />}
+              {tab.id === "folders" && <Folder className="material-line-icon" size={20} />}
+              {tab.id === "components" && <Wrench className="material-line-icon" size={20} />}
+              {tab.id === "doctor" && <ShieldCheck className="material-line-icon" size={20} />}
+              {tab.id === "vision" && <ImageIcon className="material-line-icon" size={20} />}
+              {tab.id === "remote" && <HardDrive className="material-line-icon" size={20} />}
+              {tab.id === "access" && <Code2 className="material-line-icon" size={20} />}
+              {tab.id === "cloud" && <Cloud className="material-line-icon" size={20} />}
+              {tab.id === "advanced" && <Settings className="material-line-icon" size={20} />}
               <span>{tab.label}</span>
             </button>
           );

@@ -8585,3 +8585,324 @@ mark {
 }
 :root.dark .settings-panel .overview-shield { background: rgba(28, 32, 40, 0.9); }
 :root.dark .settings-panel .overview-provider-line span { background: rgba(28, 32, 40, 0.9); }
+
+/* ===== DESIGN CHIAVETTA: icone line, carosello home, header+bottom-nav impostazioni ===== */
+.settings-model-list,
+.settings-danger-actions,
+.settings-preset-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-model-row,
+.settings-preset-list span {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #3c4043;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.settings-model-row span {
+  font-weight: 750;
+}
+
+.settings-model-row strong {
+  color: #1a73e8;
+  font-size: 12px;
+}
+
+.material-line-icon {
+  flex: 0 0 auto;
+  stroke-width: 2;
+  filter: none;
+}
+
+.title-action .material-line-icon {
+  color: #5f6368;
+}
+
+.home-workspace .search-box .material-line-icon,
+.home-workspace .search-material-icon {
+  color: #5f6368;
+}
+
+.home-dock button .material-line-icon {
+  color: currentColor;
+  stroke-width: 2.1;
+}
+
+.home-feature-carousel {
+  width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(224px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding: 2px 2px 8px;
+}
+
+.home-feature-carousel::-webkit-scrollbar {
+  display: none;
+}
+
+.home-feature-slide {
+  min-height: 148px;
+  display: grid;
+  grid-template-rows: 76px auto;
+  justify-items: center;
+  align-items: start;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.44);
+  padding: 14px 16px 16px;
+  box-shadow:
+    0 18px 42px rgba(39, 55, 77, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(24px) saturate(1.18);
+}
+
+.home-feature-slide img {
+  width: 88px;
+  height: 76px;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 16px rgba(39, 55, 77, 0.13));
+}
+
+.home-feature-slide div {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+}
+
+.home-feature-slide strong {
+  color: #202124;
+  font-size: 15px;
+  font-weight: 720;
+}
+
+.home-feature-slide span {
+  max-width: 220px;
+  color: rgba(60, 64, 67, 0.76);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.local-ask-icon {
+  width: 42px;
+  height: 42px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(232, 240, 254, 0.78);
+  color: var(--trova-logo-blue);
+}
+
+.no-results-inline {
+  width: min(640px, calc(100vw - 48px));
+  margin: 48px auto 0;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: #202124;
+  text-align: center;
+}
+
+.no-results-inline .material-line-icon {
+  color: var(--trova-logo-blue);
+  filter: drop-shadow(0 12px 18px rgba(47, 111, 237, 0.18));
+}
+
+.no-results-inline h2 {
+  margin: 0;
+  font-size: clamp(22px, 3vw, 34px);
+  font-weight: 720;
+}
+
+.no-results-inline p {
+  max-width: 500px;
+  margin: 0;
+  color: rgba(60, 64, 67, 0.76);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .home-workspace .home-command-center {
+    width: calc(100vw - 28px);
+    margin-top: 28px;
+  }
+
+  .home-feature-carousel {
+    grid-auto-columns: minmax(210px, 78vw);
+  }
+
+  .home-workspace .local-ask-panel {
+    width: calc(100vw - 28px);
+    padding: 14px;
+  }
+
+  .home-workspace .local-ask-row {
+    grid-template-columns: 1fr;
+  }
+
+  .home-workspace .local-ask-row button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+.settings-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #1f2937;
+}
+
+.settings-brand .google-mark {
+  width: 48px;
+  height: 48px;
+  box-shadow:
+    0 14px 30px rgba(47, 111, 237, 0.18),
+    0 6px 18px rgba(49, 198, 167, 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.48);
+}
+
+.settings-brand strong {
+  font-size: 29px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.settings-head-search {
+  height: 48px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(223, 225, 229, 0.96);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  color: #5f6368;
+  padding: 0 8px 0 17px;
+  box-shadow:
+    0 1px 6px rgba(32, 33, 36, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+}
+
+.settings-head-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #3c4043;
+  font-size: 16px;
+}
+
+.settings-head-search input::placeholder {
+  color: #8a9099;
+}
+
+.settings-head-search button,
+.settings-head-icon {
+  border: 0;
+  background: transparent;
+  color: #5f6368;
+}
+
+.settings-head-search button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.settings-head-search button:hover,
+.settings-head-icon:hover {
+  background: rgba(241, 243, 244, 0.96);
+}
+
+.settings-head-icon {
+  grid-column: 4;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  justify-self: end;
+  border-radius: 16px;
+}
+
+.settings-panel .settings-tabs button svg.material-line-icon {
+  flex: 0 0 auto;
+  color: currentColor;
+  stroke-width: 2;
+}
+
+.app-bottom-nav {
+  position: fixed;
+  right: auto;
+  bottom: 0;
+  left: 50%;
+  z-index: 80;
+  transform: translateX(-50%);
+  width: min(820px, calc(100% - 48px));
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-bottom: 0;
+  border-radius: 28px 28px 0 0;
+  background: rgba(255, 255, 255, 0.3);
+  padding: 12px;
+  box-shadow:
+    0 -18px 54px rgba(60, 64, 67, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(30px) saturate(1.38);
+  -webkit-backdrop-filter: blur(30px) saturate(1.38);
+}
+
+.app-bottom-nav button {
+  min-width: 0;
+  min-height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(60, 64, 67, 0.9);
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.app-bottom-nav button.active {
+  color: #1a73e8;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.window.settings-mode > .titlebar {
+  display: none;
+}
+
+.window.settings-mode .app-shell {
+  min-height: 100vh;
+}
+
+.settings-bottom-nav {
+  grid-column: auto;
+  grid-row: auto;
+}
