@@ -1206,6 +1206,14 @@ function App() {
     }
   }
 
+  function openAddFolderPage() {
+    playUiSound("open");
+    setFolderDraftError("");
+    setShowSettings(false);
+    if (!folderDraft) setFolderDraft("/home/fabio/Documents");
+    setShowAddFolderDialog(true);
+  }
+
   async function addPath() {
     playUiSound("open");
     setFolderDraftError("");
@@ -2131,7 +2139,7 @@ function App() {
               <GeneratedIcon name="search" size={22} />
               <span>Cerca</span>
             </button>
-            <button onClick={addPath}>
+            <button onClick={openAddFolderPage}>
               <GeneratedIcon name="folder" size={22} />
               <span>Aggiungi cartella</span>
             </button>
@@ -2430,7 +2438,7 @@ function App() {
                 void runLocalSearch(undefined, "text", nextQuery);
               }}
               onCloseSettings={() => setShowSettings(false)}
-              onOpenAddFolder={() => { setShowSettings(false); addPath(); }}
+              onOpenAddFolder={openAddFolderPage}
             />
           ) : (
             <>
@@ -2505,7 +2513,7 @@ function App() {
                     <Search className="material-line-icon" size={22} />
                     <span>Cerca</span>
                   </button>
-                  <button type="button" onClick={addPath}>
+                  <button type="button" onClick={openAddFolderPage}>
                     <Folder className="material-line-icon" size={22} />
                     <span>Aggiungi cartella</span>
                   </button>
