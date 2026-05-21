@@ -10488,16 +10488,38 @@ mark {
   border-color: rgba(120,135,160,0.25);
 }
 
-/* ===== FIX impostazioni: 9 tab (funzioni AI in più) non devono sforare dietro la barra in basso ===== */
+/* ===== FIX impostazioni: 9 voci con lo stile pulito della chiavetta, ben spaziate, scroll se serve, nessuna tagliata dietro la bottom-nav ===== */
 .settings-panel .settings-tabs {
   grid-template-rows: none !important;
-  grid-auto-rows: min-content;
-  overflow-y: auto;
+  display: flex !important;
+  flex-direction: column;
+  gap: 8px;
+  align-self: start;
   align-content: start;
+  max-height: calc(min(820px, calc(100vh - 126px)) - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 20px 108px;
   scrollbar-width: thin;
+  scrollbar-color: rgba(120,135,160,0.4) transparent;
+}
+.settings-panel .settings-tabs::-webkit-scrollbar { width: 6px; }
+.settings-panel .settings-tabs::-webkit-scrollbar-thumb {
+  background: rgba(120,135,160,0.4);
+  border-radius: 999px;
 }
 .settings-panel .settings-tabs::before { display: none !important; }
-.settings-panel .settings-tabs button:last-child {
+.settings-panel .settings-tabs button {
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 52px;
+  justify-content: flex-start;
+  gap: 13px;
+  border-radius: 16px;
+  padding: 0 16px;
+  font-size: 15px;
+  font-weight: 660;
+  text-align: left;
   margin-top: 0 !important;
   align-self: auto !important;
 }
