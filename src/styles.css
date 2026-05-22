@@ -10660,3 +10660,45 @@ html, body, #root { background: transparent !important; }
 .window.win-maximized {
   border-radius: 0;
 }
+
+/* ===== Toggle "Cerca in tutto il PC" (tab Cartelle) ===== */
+.search-all-pc {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(218, 220, 224, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.search-all-pc.on {
+  border-color: var(--trova-logo-blue, #2f6fed);
+  background: rgba(232, 240, 254, 0.7);
+}
+.search-all-pc input { position: absolute; opacity: 0; width: 0; height: 0; }
+.search-all-pc-box {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(120, 135, 160, 0.6);
+  border-radius: 8px;
+  background: #fff;
+  color: transparent;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.search-all-pc.on .search-all-pc-box {
+  background: var(--trova-logo-blue, #2f6fed);
+  border-color: var(--trova-logo-blue, #2f6fed);
+  color: #fff;
+}
+.search-all-pc-copy { display: flex; flex-direction: column; gap: 2px; }
+.search-all-pc-copy strong { font-size: 15px; font-weight: 680; color: #202124; }
+.search-all-pc-copy small { font-size: 12.5px; color: #5f6368; line-height: 1.35; }
+:root.dark .search-all-pc { background: rgba(40,44,52,0.7); border-color: rgba(120,135,160,0.3); }
+:root.dark .search-all-pc-copy strong { color: #e8eaf0; }
+:root.dark .search-all-pc-copy small { color: #aab1bd; }

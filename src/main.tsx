@@ -4453,6 +4453,26 @@ function SettingsPanel({
             <span>{paths.length.toLocaleString("it-IT")} percorsi</span>
           </div>
 
+          <label className={`search-all-pc ${paths.some((p) => p.path === "/" && p.enabled) ? "on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={paths.some((p) => p.path === "/" && p.enabled)}
+              onChange={(event) => {
+                if (event.currentTarget.checked) {
+                  const others = paths.filter((p) => p.path !== "/");
+                  onSave([...others, { id: "root-all-pc", path: "/", enabled: true, recursive: true, isExcluded: false, geminiEnabled: false, autoIndex: true, sourceType: "local" }]);
+                } else {
+                  onSave(paths.filter((p) => p.path !== "/"));
+                }
+              }}
+            />
+            <span className="search-all-pc-box"><Check className="material-line-icon" size={16} /></span>
+            <span className="search-all-pc-copy">
+              <strong>Cerca in tutto il PC</strong>
+              <small>Indicizza l'intero disco, non solo le cartelle personali. Restano esclusi file di sistema/nascosti e file troppo grandi. La prima preparazione puo essere piu lunga.</small>
+            </span>
+          </label>
+
           <div className="watch-list">
             {paths.map((path) => {
               const icon = iconForPath(path.path);
