@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import LiquidGlass from "@nkzw/liquid-glass";
 import { invoke as tauriInvokeRaw } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Archive,
   BrainCircuit,
@@ -596,6 +597,14 @@ function readRecentFiles(): IndexedFile[] {
 function App() {
   const desktopBackendAvailable = hasTauriBackend();
   const forceTutorial = new URLSearchParams(window.location.search).has("tutorial");
+  useEffect(() => {
+    if (!desktopBackendAvailable) return;
+    try {
+      void getCurrentWindow().setDecorations(false);
+    } catch (err) {
+      console.warn("Decorazioni native non disattivabili", err);
+    }
+  }, [desktopBackendAvailable]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [mode, setMode] = useState<SearchMode>("text");
@@ -2036,16 +2045,7 @@ function App() {
 
   return (
     <main className={`window ${showSettings ? "settings-mode" : ""}`}>
-      <header className="titlebar">
-        <div className="app-title">
-          <span className="google-mark" />
-          <span>Trova</span>
-        </div>
-        <button className="title-action" onClick={() => setShowSettings((value) => !value)}>
-          <Settings className="material-line-icon" size={22} />
-          <span>Impostazioni</span>
-        </button>
-      </header>
+      <WindowChrome />
 
       {showSetup && (
         <SetupTutorial
@@ -2142,6 +2142,10 @@ function App() {
             <button onClick={openAddFolderPage}>
               <GeneratedIcon name="folder" size={22} />
               <span>Aggiungi cartella</span>
+            </button>
+            <button className={showSettings ? "active" : ""} onClick={() => setShowSettings(true)}>
+              <Settings className="material-line-icon" size={22} />
+              <span>Impostazioni</span>
             </button>
           </nav>
 
@@ -5778,6 +5782,37 @@ async function tauriInvoke<T>(command: string, args: Record<string, unknown> = {
     }
   }
   return tauriInvokeRaw<T>(command, args);
+}
+
+function trovaWindowControl(action: "minimize" | "maximize" | "close") {
+  if (!hasTauriBackend()) return;
+  try {
+    const win = getCurrentWindow();
+    if (action === "minimize") void win.minimize();
+    else if (action === "maximize") void win.toggleMaximize();
+    else void win.close();
+  } catch (err) {
+    console.warn("Controllo finestra non disponibile", err);
+  }
+}
+
+function WindowChrome() {
+  return (
+    <>
+      <div className="window-drag" data-tauri-drag-region aria-hidden="true" />
+      <div className="window-controls" aria-label="Controlli finestra">
+        <button type="button" className="window-ctl minimize" onClick={() => trovaWindowControl("minimize")} aria-label="Riduci a icona" title="Riduci">
+          <Minus size={18} />
+        </button>
+        <button type="button" className="window-ctl maximize" onClick={() => trovaWindowControl("maximize")} aria-label="Ingrandisci o ripristina" title="Ingrandisci">
+          <Square size={15} />
+        </button>
+        <button type="button" className="window-ctl close" onClick={() => trovaWindowControl("close")} aria-label="Chiudi" title="Chiudi">
+          <X size={18} />
+        </button>
+      </div>
+    </>
+  );
 }
 
 function hasTauriBackend() {
