@@ -10579,3 +10579,43 @@ mark {
 /* tema scuro: controlli leggibili */
 :root.dark .window-ctl { color: #d6d8de; }
 :root.dark .window-ctl:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* ===== Tasto cambia tema: spostato a sinistra dei controlli finestra (niente sovrapposizione) ===== */
+.theme-toggle-button {
+  top: 9px !important;
+  right: 166px !important;
+  z-index: 5999 !important;
+}
+
+/* ===== Impostazioni: il pannello riempie sempre l'altezza della pagina ===== */
+.clean-shell .workspace.settings-workspace,
+.window.settings-mode .workspace.settings-workspace {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+}
+.settings-panel.settings-console {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  width: 100% !important;
+  max-width: 1288px;
+  margin: 0 auto !important;
+}
+/* la sidebar tab riempie tutta l'altezza del pannello e scrolla se serve */
+.settings-panel .settings-tabs {
+  height: 100% !important;
+  max-height: none !important;
+  align-self: stretch !important;
+}
+
+/* ===== Impostazioni: vincola il workspace all'altezza esatta finestra (il pannello riempie senza sforare) ===== */
+.clean-shell .workspace.settings-workspace,
+.window.settings-mode .workspace.settings-workspace {
+  height: 100vh !important;
+  min-height: 100vh !important;
+  max-height: 100vh !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
+}
