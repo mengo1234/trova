@@ -10702,3 +10702,24 @@ html, body, #root { background: transparent !important; }
 :root.dark .search-all-pc { background: rgba(40,44,52,0.7); border-color: rgba(120,135,160,0.3); }
 :root.dark .search-all-pc-copy strong { color: #e8eaf0; }
 :root.dark .search-all-pc-copy small { color: #aab1bd; }
+
+/* ===== FIX definitivo: contenuto Impostazioni e Aggiungi cartella deve SCORRERE, non essere tagliato (HiDPI/altezze piccole) ===== */
+.settings-panel .settings-tab-panel {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  padding-bottom: 140px !important;
+  box-sizing: border-box;
+}
+.settings-panel .settings-overview-mockup {
+  min-height: 0 !important;
+}
+.add-folder-body { min-height: 0 !important; }
+.add-folder-stage {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow-y: auto !important;
+  padding-bottom: 140px !important;
+  box-sizing: border-box;
+}
