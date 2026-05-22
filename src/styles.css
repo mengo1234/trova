@@ -10619,3 +10619,44 @@ mark {
   overflow: hidden !important;
   box-sizing: border-box;
 }
+
+/* ===== Logo programma in alto a sinistra (zona trascinabile) ===== */
+.window-brand {
+  position: fixed;
+  top: 8px;
+  left: 16px;
+  z-index: 6001;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  pointer-events: none;
+}
+.window-brand .google-mark {
+  width: 26px;
+  height: 26px;
+}
+.window-brand-name {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  color: var(--trova-ink, #1f2937);
+}
+:root.dark .window-brand-name { color: #e8eaf0; }
+
+/* ===== Tasto cambia tema SOTTO la X (non a fianco) ===== */
+.theme-toggle-button {
+  top: 52px !important;
+  right: 16px !important;
+  z-index: 5999 !important;
+}
+
+/* ===== Angoli finestra arrotondati quando NON a schermo intero ===== */
+html, body, #root { background: transparent !important; }
+.window {
+  border-radius: 16px;
+  overflow: hidden;
+}
+.window.win-maximized {
+  border-radius: 0;
+}

@@ -605,6 +605,20 @@ function App() {
       console.warn("Decorazioni native non disattivabili", err);
     }
   }, [desktopBackendAvailable]);
+  const [windowMaximized, setWindowMaximized] = useState(false);
+  useEffect(() => {
+    if (!desktopBackendAvailable) return;
+    const win = getCurrentWindow();
+    const sync = () => { void win.isMaximized().then(setWindowMaximized).catch(() => {}); };
+    sync();
+    let unlisten: (() => void) | undefined;
+    try {
+      void win.onResized(() => sync()).then((fn) => { unlisten = fn; }).catch(() => {});
+    } catch (err) {
+      console.warn("onResized non disponibile", err);
+    }
+    return () => { if (unlisten) unlisten(); };
+  }, [desktopBackendAvailable]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [mode, setMode] = useState<SearchMode>("text");
@@ -2044,7 +2058,7 @@ function App() {
   }
 
   return (
-    <main className={`window ${showSettings ? "settings-mode" : ""}`}>
+    <main className={`window ${showSettings ? "settings-mode" : ""} ${windowMaximized ? "win-maximized" : ""}`}>
       <WindowChrome />
 
       {showSetup && (
@@ -5800,6 +5814,10 @@ function WindowChrome() {
   return (
     <>
       <div className="window-drag" data-tauri-drag-region aria-hidden="true" />
+      <div className="window-brand" data-tauri-drag-region>
+        <span className="google-mark" aria-hidden="true" />
+        <span className="window-brand-name">Trova</span>
+      </div>
       <div className="window-controls" aria-label="Controlli finestra">
         <button type="button" className="window-ctl minimize" onClick={() => trovaWindowControl("minimize")} aria-label="Riduci a icona" title="Riduci">
           <Minus size={18} />
