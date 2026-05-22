@@ -10723,3 +10723,31 @@ html, body, #root { background: transparent !important; }
   padding-bottom: 140px !important;
   box-sizing: border-box;
 }
+
+/* ===== Aggiungi cartella: il pannello riempie l'altezza (come Impostazioni), niente cap corto ===== */
+.add-folder-overlay {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  max-height: 100vh !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
+}
+.add-folder-app {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  width: 100% !important;
+  max-width: 1288px;
+  margin: 0 auto !important;
+}
+.add-folder-body { min-height: 0 !important; height: 100% !important; }
+
+/* ===== Aggiungi cartella: lo stage scrolla sempre entro l'altezza visibile, azioni sempre raggiungibili ===== */
+.add-folder-stage {
+  max-height: calc(100vh - 230px) !important;
+  overflow-y: auto !important;
+}
