@@ -10751,3 +10751,20 @@ html, body, #root { background: transparent !important; }
   max-height: calc(100vh - 230px) !important;
   overflow-y: auto !important;
 }
+
+/* ===== Impostazioni: bottom-nav incollata in fondo (in-flow, ultima della colonna flex) ===== */
+.clean-shell .workspace.settings-workspace,
+.window.settings-mode .workspace.settings-workspace {
+  padding-bottom: 0 !important;
+  justify-content: flex-start;
+}
+.settings-bottom-nav {
+  position: relative !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  margin: 10px auto 14px !important;
+  flex: 0 0 auto !important;
+  z-index: 5;
+}
