@@ -10780,3 +10780,29 @@ html, body, #root { background: transparent !important; }
   background: #f4f8ff !important;
 }
 :root.dark .search-all-pc { background: #21252c !important; }
+
+/* ===== Aggiungi cartella: card sotto i controlli finestra + riempie lo spazio (meno scroll) ===== */
+.add-folder-overlay { padding-top: 54px !important; }
+.add-folder-dialog {
+  min-height: 100% !important;
+  align-content: start !important;
+  gap: 14px !important;
+}
+.add-folder-dialog .add-folder-preview { min-height: 132px !important; }
+.add-folder-dialog .add-folder-suggestions { gap: 16px !important; }
+.add-folder-dialog .add-folder-suggestions button { padding: 12px !important; }
+
+/* ===== Aggiungi cartella: compattazione per far entrare tutto senza scroll ===== */
+.add-folder-overlay { padding-top: 46px !important; }
+.add-folder-dialog { gap: 10px !important; padding: 16px !important; }
+.add-folder-dialog .add-folder-preview { min-height: 96px !important; padding: 12px !important; }
+.add-folder-dialog .add-folder-head { gap: 14px !important; }
+.add-folder-dialog .add-folder-head .add-folder-icon .generated-icon { width: 46px !important; height: 46px !important; }
+.add-folder-dialog .add-folder-form-row { padding: 10px 12px !important; }
+.add-folder-dialog .add-folder-usb-row { margin-top: 4px !important; }
+.add-folder-appbar { min-height: 66px !important; }
+.add-folder-app { grid-template-rows: 66px 4px minmax(0,1fr) !important; }
+.add-folder-stage { padding-bottom: 110px !important; }
+
+/* ===== Aggiungi cartella: niente padding-bottom enorme che forza lo scroll inutile ===== */
+.add-folder-stage { padding-bottom: 22px !important; }
