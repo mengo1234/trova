@@ -10768,3 +10768,15 @@ html, body, #root { background: transparent !important; }
   flex: 0 0 auto !important;
   z-index: 5;
 }
+
+/* ===== Flag "Cerca in tutto il PC": card opaca pulita (non far trasparire la filigrana decorativa) ===== */
+.search-all-pc {
+  background: #ffffff !important;
+  position: relative;
+  z-index: 3;
+  box-shadow: 0 6px 18px rgba(50,64,84,0.08);
+}
+.search-all-pc.on {
+  background: #f4f8ff !important;
+}
+:root.dark .search-all-pc { background: #21252c !important; }
