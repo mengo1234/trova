@@ -10806,3 +10806,25 @@ html, body, #root { background: transparent !important; }
 
 /* ===== Aggiungi cartella: niente padding-bottom enorme che forza lo scroll inutile ===== */
 .add-folder-stage { padding-bottom: 22px !important; }
+
+/* ===== Impostazioni: abbassa il pannello sotto i controlli finestra (come Aggiungi cartella) ===== */
+.clean-shell .workspace.settings-workspace,
+.window.settings-mode .workspace.settings-workspace {
+  padding-top: 52px !important;
+}
+
+/* ===== Aggiungi cartella: anteprima come pannello alto a destra (usa lo spazio a destra, accorcia la pagina) ===== */
+.add-folder-dialog {
+  grid-template-columns: minmax(0, 1fr) 300px !important;
+  column-gap: 16px !important;
+  align-content: start !important;
+}
+.add-folder-dialog > * { grid-column: 1 !important; }
+.add-folder-dialog > .add-folder-preview {
+  grid-column: 2 !important;
+  grid-row: 1 / 100 !important;
+  min-height: 0 !important;
+  align-self: stretch !important;
+  grid-template-columns: minmax(0,1fr) !important;
+  align-content: center;
+}
