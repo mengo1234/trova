@@ -10850,3 +10850,29 @@ html, body, #root { background: transparent !important; }
   border-color: rgba(120,135,160,0.35) !important;
   box-shadow: none !important;
 }
+
+/* ===== Progress bar: larghezza FISSA, non dipende dalla lunghezza delle scritte ===== */
+.home-autosetup-banner {
+  grid-template-columns: 52px minmax(0, 1fr) 56px !important;
+}
+.home-autosetup-percent {
+  width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.home-autosetup-bar { width: 100% !important; }
+
+/* anche il search status card e le altre barre */
+.home-search-status-card {
+  grid-template-columns: 66px minmax(0, 1fr) 56px !important;
+}
+.home-status-percent {
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.home-status-progress { width: 100% !important; }
+
+/* index-card progress line */
+.index-card .progress-line { width: 100% !important; }
+.progress-ring { min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
