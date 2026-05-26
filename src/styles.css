@@ -10828,3 +10828,25 @@ html, body, #root { background: transparent !important; }
   grid-template-columns: minmax(0,1fr) !important;
   align-content: center;
 }
+
+/* ===== Dark mode polish: pulsanti azione morbidi (non rosso pieno acceso) ===== */
+:root.dark .settings-danger-actions button {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ea4335 !important;
+  border-color: rgba(234, 67, 53, 0.35) !important;
+  box-shadow: none !important;
+}
+:root.dark .settings-danger-actions button:hover {
+  background: rgba(234, 67, 53, 0.10) !important;
+  color: #ff5b50 !important;
+}
+:root.dark .settings-danger-actions button:nth-child(2) {
+  color: #ff7a73 !important;
+  border-color: rgba(234, 67, 53, 0.45) !important;
+}
+:root.dark .watch-filter-row button, :root.dark .remote-controls button {
+  background: rgba(255,255,255,0.05) !important;
+  color: #e8eaf0 !important;
+  border-color: rgba(120,135,160,0.35) !important;
+  box-shadow: none !important;
+}

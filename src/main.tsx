@@ -605,6 +605,12 @@ function App() {
       console.warn("Decorazioni native non disattivabili", err);
     }
   }, [desktopBackendAvailable]);
+  useEffect(() => {
+    if (!desktopBackendAvailable) return;
+    // Avvia il backend locale (Node) appena l'app parte, cosi i pulsanti di
+    // installazione/preparazione funzionano subito senza aspettare un errore.
+    void ensureDesktopLocalApi();
+  }, [desktopBackendAvailable]);
   const [windowMaximized, setWindowMaximized] = useState(false);
   useEffect(() => {
     if (!desktopBackendAvailable) return;
