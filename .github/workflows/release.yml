@@ -115,5 +115,16 @@ jobs:
           path: artifacts
       - uses: softprops/action-gh-release@v2
         with:
+          draft: false
+          make_latest: true
+          fail_on_unmatched_files: false
+          # SOLO gli installer reali (no file interni .deb / node a 0 byte / nomi duplicati,
+          # che facevano fallire il publish con "size must be >= 1").
           files: |
-            artifacts/**/*
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.AppImage
+            artifacts/**/*.dmg
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.msi
+            artifacts/**/*.exe
