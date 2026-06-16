@@ -38,6 +38,13 @@ try {
     }
     const result = await runReleaseBuild(status);
     print(result, formatBuild);
+    // Se un passo (es. tauri build) e' fallito, NON nascondere l'errore: mostralo ed esci != 0,
+    // altrimenti il job CI risulta verde ma non produce alcun installer (artifact vuoto).
+    const failedStep = (result.executed || []).find((step) => !step.ok);
+    if (failedStep) {
+      console.error(`\n=== Step fallito: ${failedStep.label} ===\n${failedStep.output || "(nessun output)"}`);
+      process.exit(1);
+    }
   } else {
     throw new Error(`Azione release non riconosciuta: ${action}`);
   }
