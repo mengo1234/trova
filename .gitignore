@@ -6,3 +6,12 @@ src-tauri/binaries/
 .env
 .env.*
 !.env.example
+_run_app.sh
+_run_backend.sh
+_run_release.sh
+_run_preview.sh
+_run_vite.sh
+_relink.sh
+trova-spotlight.sh
+scripts/_gen_lens.mjs
+/site/

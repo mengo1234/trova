@@ -10,7 +10,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Cloud,
   Code2,
   Cpu,
@@ -23,6 +22,7 @@ import {
   HelpCircle,
   Home,
   Image as ImageIcon,
+  Keyboard,
   List,
   MessageSquare,
   Mic,
@@ -96,6 +96,14 @@ import "./styles.css";
 type ResultKind = "document" | "image" | "audio" | "video" | "code" | "other";
 type SearchMode = "text" | "image" | "person";
 type ResultSource = "local" | "gemini";
+type HotkeyConfig = { shortcut: string; mode: string; enabled: boolean };
+type AttachedFile = { file: File; previewUrl?: string; kind: "image" | "text" | "binary" };
+
+const DEFAULT_HOTKEY_CONFIG: HotkeyConfig = {
+  shortcut: "Control+Space",
+  mode: "spotlight",
+  enabled: false,
+};
 
 type IndexedFile = {
   id: string;
@@ -521,6 +529,10 @@ const defaultRemoteProviders = [
 
 const FINGERPRINT_MODEL = "trova-fingerprint-v1";
 
+// Modalita SOLO LOCALE: NVIDIA e Gemini rimossi, Trova usa solo AI on-device.
+// Il backend impone comunque il blocco; qui evitiamo di tentare/mostrare il cloud.
+const LOCAL_ONLY = true;
+
 const fallbackWatchPaths: WatchPath[] = [
   watchPath("/home/fabio/Desktop", true),
   watchPath("/home/fabio/Documents", true),
@@ -582,6 +594,7 @@ const setupPreviewScreens = [
 ];
 
 const RECENT_FILES_KEY = "trova.recentFiles";
+const RECENT_SEARCHES_KEY = "trova.recentSearches";
 
 function readRecentFiles(): IndexedFile[] {
   try {
@@ -592,6 +605,25 @@ function readRecentFiles(): IndexedFile[] {
   } catch {
     return [];
   }
+}
+
+function readRecentSearches(): string[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_SEARCHES_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((q) => typeof q === "string" && q.trim()).slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+function classifyAttachedFile(file: File): AttachedFile["kind"] {
+  if (file.type.startsWith("image/")) return "image";
+  if (
+    file.type.startsWith("text/")
+    || file.type === "application/json"
+    || /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(file.name)
+  ) return "text";
+  return "binary";
 }
 
 function App() {
@@ -631,6 +663,16 @@ function App() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [results, setResults] = useState<IndexedFile[]>([]);
   const [recentFiles, setRecentFiles] = useState<IndexedFile[]>(readRecentFiles);
+  const [recentSearches, setRecentSearches] = useState<string[]>(readRecentSearches);
+  function recordRecentSearch(q: string) {
+    const text = q.trim();
+    if (!text) return;
+    setRecentSearches((prev) => {
+      const next = [text, ...prev.filter((x) => x.toLowerCase() !== text.toLowerCase())].slice(0, 8);
+      try { window.localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
   const [watchPaths, setWatchPaths] = useState<WatchPath[]>(fallbackWatchPaths);
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -647,7 +689,6 @@ function App() {
   const [imageQueryFile, setImageQueryFile] = useState<File | null>(null);
   const [imageQueryPreview, setImageQueryPreview] = useState("");
   // Multi-file: tutti i file allegati alla conversazione corrente
-  type AttachedFile = { file: File; previewUrl?: string; kind: "image" | "text" | "binary" };
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -670,13 +711,14 @@ function App() {
   const [mentionQuery, setMentionQuery] = useState<string>("");
   const [showMentionDropdown, setShowMentionDropdown] = useState<boolean>(false);
   const [aiProviderStatus, setAiProviderStatus] = useState<{ providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }> }>; activeProvider: string; activeModel: string } | null>(null);
-  const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean; systemPrompt?: string; temperature?: number; maxTokens?: number; ragDepth?: number }>({ provider: "auto", modelKey: "nemotron-super-49b", agentEnabled: false, systemPrompt: "", temperature: 0.2, maxTokens: 1500, ragDepth: 6 });
+  const [aiProviderConfig, setAiProviderConfig] = useState<{ provider: string; modelKey: string; agentEnabled: boolean; systemPrompt?: string; temperature?: number; maxTokens?: number; ragDepth?: number }>({ provider: LOCAL_ONLY ? "ollama" : "auto", modelKey: LOCAL_ONLY ? "" : "nemotron-super-49b", agentEnabled: false, systemPrompt: "", temperature: 0.2, maxTokens: 1500, ragDepth: 6 });
   // Voce: stato sintesi e riconoscimento
   const [isListening, setIsListening] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ollamaInstall, setOllamaInstall] = useState<{ label: string; progress: number; detail?: string; running: boolean } | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   // Hotkey globale
-  const [hotkeyConfig, setHotkeyConfig] = useState<{ shortcut: string; mode: string; enabled: boolean }>({ shortcut: "", mode: "spotlight", enabled: false });
+  const [hotkeyConfig, setHotkeyConfig] = useState<HotkeyConfig>(DEFAULT_HOTKEY_CONFIG);
   const [capturingHotkey, setCapturingHotkey] = useState(false);
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
   const [localVisionStatus, setLocalVisionStatus] = useState<LocalVisionStatus | null>(null);
@@ -796,8 +838,9 @@ function App() {
       return;
     }
     autoSetupKickoffStarted.current = true;
-    setComponentInstallStatus("Preparo tutto in background...");
-    void startAutomaticSetup();
+    // Auto-preparazione disattivata: reimpostava le cartelle ai default e azzerava
+    // l'indice a ogni avvio. L'AI locale si installa comunque da sola (autoEnsureLocalAi
+    // lato backend); l'indicizzazione parte quando l'utente sceglie le cartelle.
   }, [autoSetupJob?.status, autoSetupJob?.id]);
 
   useEffect(() => {
@@ -828,53 +871,82 @@ function App() {
     setLocalVisionMessage("Foto e video pronti da preparare");
   }, []);
 
+  // AI locale gia pronta? (provider ollama/lmstudio con almeno un modello)
+  const aiLocalReady = (aiProviderStatus?.providers ?? []).some(
+    (p) => (p.id === "ollama" || p.id === "lmstudio") && (p.models?.length ?? 0) > 0,
+  );
+
   // Polling installazione Ollama+Gemma in corso (per la barra di progresso live)
   useEffect(() => {
-    if (!ollamaInstall?.running) return;
+    // Poll finche l'AI locale non e pronta o c'e un'installazione in corso.
+    // PRIMA girava all'infinito (LOCAL_ONLY sempre vero) e ogni 1.5s faceva
+    // setOllamaInstall con un oggetto nuovo -> re-render dell'INTERA app: causa
+    // principale dei rallentamenti. Ora si ferma quando l'AI e pronta e aggiorna
+    // lo stato solo se e davvero cambiato.
+    const keepPolling = (LOCAL_ONLY && !aiLocalReady) || ollamaInstall?.running;
+    if (!keepPolling) return;
     let cancelled = false;
+    let wasRunning = Boolean(ollamaInstall?.running);
     const tick = async () => {
-      const next = await safeInvoke<{ label: string; progress: number; detail?: string; running: boolean }>(
-        "get_ollama_install_status", {}, { label: "", progress: 0, running: false }
+      const next = await safeInvoke<{ label: string; progress: number; detail?: string; running: boolean } | null>(
+        "get_ollama_install_status", {}, null,
       );
       if (cancelled || !next) return;
-      setOllamaInstall(next);
-      if (!next.running) {
-        // Reload provider status (Ollama dovrebbe essere ora online)
+      // Aggiorna solo se c'e qualcosa da mostrare E se e cambiato (niente re-render a vuoto)
+      if (next.running || (next.progress ?? 0) > 0) {
+        setOllamaInstall((prev) =>
+          prev && prev.running === next.running && prev.progress === next.progress
+            && prev.label === next.label && prev.detail === next.detail
+            ? prev : next,
+        );
+      }
+      if (wasRunning && !next.running) {
+        // Installazione appena terminata: ricarica lo stato provider (Ollama ora pronto)
         const status = await safeInvoke<typeof aiProviderStatus>("get_ai_provider_status", {}, null);
         if (status) setAiProviderStatus(status);
       }
+      wasRunning = Boolean(next.running);
     };
     const timer = window.setInterval(() => void tick(), 1500);
     void tick();
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [ollamaInstall?.running]);
+  }, [ollamaInstall?.running, aiLocalReady]);
 
   // Cattura combinazione tasti per la hotkey globale
   function captureHotkeyKeydown(event: React.KeyboardEvent) {
     event.preventDefault();
-    const parts: string[] = [];
-    if (event.ctrlKey) parts.push("Control");
-    if (event.metaKey) parts.push("Super");
-    if (event.altKey) parts.push("Alt");
-    if (event.shiftKey) parts.push("Shift");
+    event.stopPropagation();
     const key = event.key;
-    // Ignora se e stato premuto solo un modificatore
-    if (!["Control", "Meta", "Alt", "Shift"].includes(key)) {
-      const named = key === " " ? "Space" : key.length === 1 ? key.toUpperCase() : key;
-      parts.push(named);
-      const combo = parts.join("+");
-      setHotkeyConfig((prev) => ({ ...prev, shortcut: combo }));
+    // Esc annulla la cattura
+    if (key === "Escape") {
       setCapturingHotkey(false);
+      return;
     }
+    const mods: string[] = [];
+    if (event.ctrlKey) mods.push("Control");
+    if (event.metaKey) mods.push("Super");
+    if (event.altKey) mods.push("Alt");
+    if (event.shiftKey) mods.push("Shift");
+    // Se finora ci sono solo modificatori, mostro l'anteprima live e aspetto il tasto finale
+    if (["Control", "Meta", "Alt", "Shift", "OS", "ContextMenu"].includes(key)) {
+      if (mods.length) setHotkeyConfig((prev) => ({ ...prev, shortcut: mods.join("+") }));
+      return;
+    }
+    // Tasto finale premuto: costruisco la combinazione e la salvo davvero
+    const named = key === " " ? "Space" : key.length === 1 ? key.toUpperCase() : key;
+    const combo = [...mods, named].join("+");
+    setCapturingHotkey(false);
+    // Registrare una combinazione implica volerla usare: la attivo subito
+    saveHotkey({ ...hotkeyConfig, shortcut: combo, mode: hotkeyConfig.mode || "spotlight", enabled: true });
   }
 
-  async function saveHotkey(next: { shortcut: string; mode: string; enabled: boolean }) {
+  async function saveHotkey(next: HotkeyConfig) {
     setHotkeyConfig(next);
     if (!hasTauriBackend()) {
       // In modalita web/dev la hotkey globale non esiste: salvo solo la preferenza UI
       return;
     }
-    const result = await desktopInvoke<{ shortcut: string; mode: string; enabled: boolean } | null>(
+    const result = await desktopInvoke<HotkeyConfig | null>(
       "set_global_hotkey", { shortcut: next.shortcut, mode: next.mode, enabled: next.enabled }, null
     );
     if (result) setHotkeyConfig(result);
@@ -904,10 +976,31 @@ function App() {
       safeInvoke<{ provider: string; modelKey: string; agentEnabled: boolean } | null>("get_ai_provider_config", {}, null),
     ]);
     if (aiProvStatus) setAiProviderStatus(aiProvStatus);
-    if (aiProvConfig) setAiProviderConfig({ provider: aiProvConfig.provider || "auto", modelKey: aiProvConfig.modelKey || "nemotron-super-49b", agentEnabled: Boolean(aiProvConfig.agentEnabled) });
+    if (aiProvConfig) {
+      // Rispetta la scelta salvata (locale di default, cloud se l'utente l'ha scelto e ha la chiave).
+      // In solo-locale ignoro un eventuale modelKey cloud salvato (es. nemotron) e lascio
+      // che sia il backend a indicare il modello locale attivo.
+      const savedModelKey = LOCAL_ONLY ? "" : (aiProvConfig.modelKey || "nemotron-super-49b");
+      setAiProviderConfig({ provider: LOCAL_ONLY ? "ollama" : (aiProvConfig.provider || "ollama"), modelKey: savedModelKey, agentEnabled: Boolean(aiProvConfig.agentEnabled) });
+    }
     void loadPinnedDocuments();
-    const hk = await desktopInvoke<{ shortcut: string; mode: string; enabled: boolean }>("get_global_hotkey", {}, { shortcut: "", mode: "spotlight", enabled: false });
-    if (hk) setHotkeyConfig(hk);
+    if (LOCAL_ONLY) {
+      // Solo locale: rileva l'eventuale installazione automatica dell'AI locale (Ollama+Gemma)
+      // avviata dal backend, cosi la UI ne mostra il progresso senza che l'utente clicchi.
+      const oi = await safeInvoke<{ label: string; progress: number; detail?: string; running: boolean } | null>(
+        "get_ollama_install_status", {}, null,
+      );
+      if (oi && (oi.running || (oi.progress ?? 0) > 0)) setOllamaInstall(oi);
+    }
+    const hk = await desktopInvoke<HotkeyConfig>("get_global_hotkey", {}, DEFAULT_HOTKEY_CONFIG);
+    if (hk) {
+      setHotkeyConfig({
+        ...DEFAULT_HOTKEY_CONFIG,
+        ...hk,
+        shortcut: hk.shortcut || DEFAULT_HOTKEY_CONFIG.shortcut,
+        mode: hk.mode || "spotlight",
+      });
+    }
     setWatchPaths(paths.length ? paths : fallbackWatchPaths);
     setStatus(indexStatus);
     setLocalVisionStatus(visionStatus);
@@ -1243,6 +1336,18 @@ function App() {
     setShowAddFolderDialog(true);
   }
 
+  // Torna alla home da qualsiasi pagina: chiude impostazioni/dialoghi e azzera la ricerca corrente
+  function goHome() {
+    setShowSettings(false);
+    setShowAddFolderDialog(false);
+    setShowThreadHistory(false);
+    setQuery("");
+    setResults([]);
+    attachedFiles.forEach((file) => file.previewUrl && URL.revokeObjectURL(file.previewUrl));
+    setAttachedFiles([]);
+    clearImageQuery();
+  }
+
   async function addPath() {
     playUiSound("open");
     setFolderDraftError("");
@@ -1348,15 +1453,18 @@ function App() {
     }
   }
 
-  async function runLocalSearch(imageEmbeddings?: number[][], overrideMode?: SearchMode) {
+  async function runLocalSearch(imageEmbeddings?: number[][], overrideMode?: SearchMode, overrideQuery?: string) {
     setError("");
+    setIsSearching(true);
+    const textQuery = (overrideQuery ?? query).trim();
+    if (textQuery) recordRecentSearch(textQuery);
     try {
       const queries = imageEmbeddings?.filter((embedding) => embedding.length) ?? [];
       const activeMode = overrideMode ?? mode;
       const runSearchWithQueries = async (visualQueries: number[][]) => {
         const nextResults = await tauriInvoke<IndexedFile[]>("search_index", {
           request: {
-            textQuery: query,
+            textQuery,
             imageQuery: visualQueries[0] ?? [],
             imageQueries: visualQueries,
             faceQuery: activeMode === "person" ? lastFaceEmbedding.current : [],
@@ -1373,18 +1481,19 @@ function App() {
           },
         });
         setResults(nextResults);
-        if (nvidiaCloudEnabled && query.trim() && nextResults.length > 1) {
-          void rerankResultsWithNvidia(query.trim(), nextResults);
+        if (nvidiaCloudEnabled && textQuery && nextResults.length > 1) {
+          void rerankResultsWithNvidia(textQuery, nextResults);
         }
         return nextResults;
       };
 
       await runSearchWithQueries(queries);
+      setIsSearching(false);
 
-      if (!queries.length && query.trim()) {
+      if (!queries.length && textQuery) {
         try {
           setIsLocalVisionBusy(true);
-          const visualTextQueries = await embedTextWithLocalVisionModels(query.trim(), (progress) => {
+          const visualTextQueries = await embedTextWithLocalVisionModels(textQuery, (progress) => {
             setLocalVisionMessage(progress.label);
             if (typeof progress.progress === "number") {
               setLocalVisionProgress(Math.round(progress.progress));
@@ -1405,6 +1514,8 @@ function App() {
       }
     } catch (err) {
       setError(String(err));
+    } finally {
+      setIsSearching(false);
     }
   }
 
@@ -1871,21 +1982,11 @@ function App() {
     }
   }
 
-  function classifyFile(file: File): "image" | "text" | "binary" {
-    if (file.type.startsWith("image/")) return "image";
-    if (
-      file.type.startsWith("text/")
-      || file.type === "application/json"
-      || /\.(txt|md|json|csv|yml|yaml|html|xml|log|js|ts|tsx|jsx|py|rs|java|c|cpp|go|sh)$/i.test(file.name)
-    ) return "text";
-    return "binary";
-  }
-
   function addAttachedFiles(fileList: FileList | File[] | null) {
     const list = Array.from(fileList || []);
     if (!list.length) return;
     const next: AttachedFile[] = list.map((file) => {
-      const kind = classifyFile(file);
+      const kind = classifyAttachedFile(file);
       return { file, kind, previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined };
     });
     setAttachedFiles((prev) => [...prev, ...next].slice(-10)); // max 10 file alla volta
@@ -2065,7 +2166,7 @@ function App() {
 
   return (
     <main className={`window ${showSettings ? "settings-mode" : ""} ${windowMaximized ? "win-maximized" : ""}`}>
-      <WindowChrome />
+      <WindowChrome onHome={goHome} />
 
       {showSetup && (
         <SetupTutorial
@@ -2141,15 +2242,18 @@ function App() {
         />
       )}
 
-      <button
-        type="button"
-        className="theme-toggle-button"
-        onClick={() => setDarkMode((value) => !value)}
-        title={darkMode ? "Tema chiaro (Ctrl+D)" : "Tema scuro (Ctrl+D)"}
-        aria-label="Cambia tema"
-      >
-        {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-      </button>
+      {/* Toggle tema visibile solo nella home (setup fatto, non in impostazioni/aggiungi cartella, nessuna ricerca in corso) */}
+      {setupComplete && !showSetup && !showSettings && !showAddFolderDialog && !hasSearchIntent && (
+        <button
+          type="button"
+          className="theme-toggle-button"
+          onClick={() => setDarkMode((value) => !value)}
+          title={darkMode ? "Tema chiaro (Ctrl+D)" : "Tema scuro (Ctrl+D)"}
+          aria-label="Cambia tema"
+        >
+          {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+      )}
 
       <div className={`app-shell ${setupComplete ? "clean-shell" : ""}`}>
         {!setupComplete && (
@@ -2237,12 +2341,14 @@ function App() {
         )}
 
         <section className={`workspace ${showSettings ? "settings-workspace" : "home-workspace"}`}>
-          {!showSettings && <HomeAnimatedScene />}
+          {/* Sempre montata (memoizzata): nascosta via CSS in impostazioni.
+              Smontarla/rimontarla ad ogni cambio pagina ricreava un SVG enorme -> lag al ritorno in home. */}
+          <HomeAnimatedScene />
           {!showSettings && (
             <div className="search-row">
               <LiquidGlassSurface variant="search">
                 <div
-                  className={`search-box ${attachedFiles.length ? "with-attachment" : ""} ${isDraggingFile ? "dropping" : ""}`}
+                  className={`search-box ${attachedFiles.length ? "with-attachment" : ""} ${isDraggingFile ? "dropping" : ""} ${isSearching ? "searching" : ""} ${status?.running ? "indexing" : ""}`}
                   onDragOver={(event) => { event.preventDefault(); setIsDraggingFile(true); }}
                   onDragLeave={() => setIsDraggingFile(false)}
                   onDrop={(event) => {
@@ -2251,7 +2357,9 @@ function App() {
                     addAttachedFiles(event.dataTransfer?.files || null);
                   }}
                 >
-                  <Search className="material-line-icon search-material-icon" size={25} />
+                  {isSearching
+                    ? <span className="search-spinner" aria-label="Ricerca in corso" />
+                    : <Search className="material-line-icon search-material-icon" size={25} />}
                   <input
                     ref={searchInputRef}
                     value={query}
@@ -2338,7 +2446,7 @@ function App() {
                     className={item.id === filter ? "active" : ""}
                     onClick={() => setFilter(item.id)}
                   >
-                    <GeneratedIcon name={item.icon} size={20} />
+                    {item.id === "all" ? <Grid2X2 size={20} /> : <GeneratedIcon name={item.icon} size={20} />}
                     <span>{item.label}</span>
                   </button>
                 );
@@ -2352,11 +2460,14 @@ function App() {
               query={query}
               answer={localAnswer}
               busy={isLocalAskBusy}
+              aiInstalling={Boolean(LOCAL_ONLY && ollamaInstall?.running)}
+              aiNotReady={LOCAL_ONLY && !(aiProviderStatus?.providers ?? []).some((p) => (p.id === "ollama" || p.id === "lmstudio") && (p.models?.length ?? 0) > 0)}
+              aiInstallLabel={ollamaInstall?.running ? `Preparo l'AI locale (Gemma)… ${Math.max(1, Math.round(ollamaInstall?.progress ?? 0))}%${ollamaInstall?.detail ? ` · ${ollamaInstall.detail}` : ""}` : "AI locale non ancora pronta: installa Gemma dalle impostazioni"}
               semanticStatus={semanticStatus}
               chatMessages={chatMessages}
               agentMode={agentMode || aiProviderConfig.agentEnabled}
               activeProviderLabel={aiProviderStatus?.providers?.find((p) => p.configured)?.label || "Modello AI non configurato"}
-              activeModelLabel={aiProviderStatus?.providers?.find((p) => p.id === aiProviderConfig.provider || (aiProviderConfig.provider === "auto" && p.configured))?.models?.find((m) => m.key === aiProviderConfig.modelKey)?.label || aiProviderConfig.modelKey}
+              activeModelLabel={aiProviderStatus?.providers?.find((p) => p.id === aiProviderConfig.provider || (aiProviderConfig.provider === "auto" && p.configured))?.models?.find((m) => m.key === aiProviderConfig.modelKey)?.label || (LOCAL_ONLY ? (aiProviderStatus?.activeModel || "AI locale") : aiProviderConfig.modelKey)}
               onQuestionChange={setLocalQuestion}
               onAsk={() => void askLocalFiles()}
               onSimilar={() => void findSimilarToText()}
@@ -2447,6 +2558,7 @@ function App() {
               onStartCaptureHotkey={() => setCapturingHotkey(true)}
               onCaptureHotkeyKeydown={captureHotkeyKeydown}
               onSaveHotkey={saveHotkey}
+              onPreviewSpotlight={() => void desktopInvoke("show_spotlight_window", {}, null)}
               ollamaInstall={ollamaInstall}
               onInstallOllamaGemma={installOllamaGemma}
               onReloadAiStatus={async () => {
@@ -2515,11 +2627,18 @@ function App() {
                   geminiStatus={geminiStatus}
                   nvidiaStatus={nvidiaStatus}
                   recentFiles={recentFiles}
+                  recentSearches={recentSearches}
+                  onRunRecentSearch={(q) => {
+                    setQuery(q);
+                    searchInputRef.current?.focus();
+                    void runLocalSearch(undefined, "text", q);
+                  }}
                   nvidiaEnabled={nvidiaCloudEnabled}
                   onPrepareFiles={indexConfiguredPaths}
                   onPrepareVision={indexLocalVisionAssets}
                   onSettings={() => setShowSettings(true)}
                   autoSetupJob={autoSetupJob}
+                  ollamaInstall={ollamaInstall}
                 />
               ) : (
                 <EmptyState
@@ -2607,14 +2726,21 @@ function AddFolderDialog({
     suggestions.find((suggestion) => suggestion.path === normalizedValue)?.label ||
     displayPathName(normalizedValue || "/home/fabio");
   const selectedIcon = iconForPath(normalizedValue || "/home/fabio");
+  const materialFolderIcon = (icon: GeneratedIconName, size = 34) => {
+    const props = { className: "material-line-icon", size, strokeWidth: 2 };
+    if (icon === "database") return <HardDrive {...props} />;
+    if (icon === "document") return <FileText {...props} />;
+    if (icon === "archive") return <Download {...props} />;
+    if (icon === "image") return <ImageIcon {...props} />;
+    return <Folder {...props} />;
+  };
 
   return (
     <div className="add-folder-overlay" role="presentation" onClick={onClose}>
       <section className="add-folder-app" role="dialog" aria-modal="true" aria-label="Aggiungi cartella" onClick={(event) => event.stopPropagation()}>
         <header className="add-folder-appbar">
           <div className="add-folder-brand">
-            <span className="google-mark" />
-            <strong>Trova</strong>
+            <strong>Aggiungi cartella</strong>
           </div>
           <div className="add-folder-searchbar">
             <Search size={18} />
@@ -2630,14 +2756,9 @@ function AddFolderDialog({
             />
             <kbd>Ctrl + K</kbd>
           </div>
-          <button type="button" className="add-folder-icon-btn" aria-label="Impostazioni" onClick={onOpenSettings}>
-            <Settings size={20} />
-          </button>
         </header>
 
-        <div className="add-folder-color-line" aria-hidden="true">
-          <i /><i /><i /><i /><i />
-        </div>
+        <div className="add-folder-color-line" aria-hidden="true" />
 
         <div className="add-folder-body">
           <aside className="add-folder-sidebar" aria-label="Navigazione Trova">
@@ -2693,7 +2814,7 @@ function AddFolderDialog({
                   onClick={() => void onBrowse()}
                   disabled={isPicking}
                 >
-                  <GeneratedIcon name="folder" size={22} />
+                  <Folder className="material-line-icon" size={22} />
                   <span>{isPicking ? "Apro selettore..." : "Scegli dal PC"}</span>
                 </button>
               </div>
@@ -2716,7 +2837,7 @@ function AddFolderDialog({
                       className={active ? "active" : ""}
                       onClick={() => onChange(suggestion.path)}
                     >
-                      <GeneratedIcon name={suggestion.icon} size={42} />
+                      {materialFolderIcon(suggestion.icon, 32)}
                       <span>{suggestion.label}</span>
                       {active && <b><Check size={16} /></b>}
                     </button>
@@ -2726,7 +2847,7 @@ function AddFolderDialog({
 
               <aside className="add-folder-preview" aria-label="Anteprima cartella scelta">
                 <div className="add-folder-preview-icon">
-                  <GeneratedIcon name={selectedIcon} size={66} />
+                  {materialFolderIcon(selectedIcon, 48)}
                 </div>
                 <div className="add-folder-preview-copy">
                   <strong>{selectedLabel}</strong>
@@ -2751,7 +2872,7 @@ function AddFolderDialog({
           </div>
         </div>
       </section>
-      <nav className="app-bottom-nav add-folder-bottom-nav" aria-label="Azioni principali" onClick={(event) => event.stopPropagation()}>
+      <nav className="home-dock add-folder-bottom-nav" aria-label="Azioni principali" onClick={(event) => event.stopPropagation()}>
         <button type="button" onClick={onOpenSearch}>
           <Search className="material-line-icon" size={22} />
           <span>Cerca</span>
@@ -2928,6 +3049,33 @@ function SetupTutorial({
             </div>
             <GeneratedTutorialAsset name="buttonOpenFolder" className="setup-folder-art" />
           </div>
+        </div>
+      ),
+    },
+    {
+      title: "Cerca da qualsiasi programma.",
+      text: "Premi la scorciatoia e Trova apre solo una barra di ricerca sopra a tutto: niente finestra grande, scrivi e trovi al volo.",
+      image: setupTutorialPreviewArt,
+      body: (
+        <div className="setup-preview-capabilities">
+          <div className="setup-hotkey-tutorial">
+            <span className="setup-hotkey-icon">
+              <GeneratedIcon name="search" size={34} />
+            </span>
+            <div className="setup-hotkey-keys" aria-label="Scorciatoia Alt piu Z">
+              <kbd>Alt</kbd>
+              <i>+</i>
+              <kbd>Z</kbd>
+            </div>
+          </div>
+          <div className="setup-folder-callout">
+            <div>
+              <strong>Premi la scorciatoia ovunque</strong>
+              <span>Da Word, dal browser o dal desktop: la barra compare al centro, scrivi e premi Invio. Esc per chiuderla.</span>
+            </div>
+            <GeneratedTutorialAsset name="buttonOpenFolder" className="setup-folder-art" />
+          </div>
+          <p className="setup-page-note">Su Linux (Wayland) la scorciatoia e gestita dal sistema: Alt+Z e gia pronta. Puoi cambiarla dalle Impostazioni, tab Scorciatoia.</p>
         </div>
       ),
     },
@@ -3130,6 +3278,53 @@ function EmptyState({
   );
 }
 
+// Banner autonomo: in modalita solo locale mostra il download automatico dell'AI (Ollama+Gemma).
+// Polla da solo lo stato cosi non dipende dalla propagazione di stato dell'App.
+function LocalAiDownloadBanner() {
+  const [oi, setOi] = useState<{ label: string; progress: number; detail?: string; running: boolean } | null>(null);
+  useEffect(() => {
+    if (!LOCAL_ONLY) return;
+    let cancelled = false;
+    const tick = async () => {
+      const next = await safeInvoke<{ label: string; progress: number; detail?: string; running: boolean } | null>(
+        "get_ollama_install_status", {}, null,
+      );
+      if (cancelled || !next) return;
+      const shown = next.running || (next.progress ?? 0) > 0 ? next : null;
+      // Aggiorna solo se cambiato davvero, altrimenti niente re-render ogni 1.5s
+      setOi((prev) => {
+        if (!shown && !prev) return prev;
+        if (shown && prev && prev.running === shown.running && prev.progress === shown.progress
+          && prev.label === shown.label && prev.detail === shown.detail) return prev;
+        return shown;
+      });
+    };
+    const timer = window.setInterval(() => void tick(), 1500);
+    void tick();
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  if (!LOCAL_ONLY || !oi) return null;
+  const pct = Math.max(0, Math.min(100, oi.progress ?? 0));
+  const done = !oi.running && pct >= 100;
+  if (!oi.running && !done) return null;
+  // Riga compatta DENTRO la card di stato (non una card separata)
+  return (
+    <div className="home-status-ai" role="status" aria-live="polite">
+      <div className="home-status-ai-head">
+        {done ? <Check size={16} strokeWidth={2.5} /> : <GeneratedIcon name="sparkle" size={16} />}
+        <strong>{done ? "AI locale pronta" : "Scarico l'AI locale"}</strong>
+        {!done && <b>{pct}%</b>}
+      </div>
+      {!done && (
+        <div className="home-status-progress" aria-label="Avanzamento download AI locale">
+          <span style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      <small>{done ? "Gemma gira offline sul tuo PC, niente cloud." : `${oi.label}${oi.detail ? ` · ${oi.detail}` : ""}`}</small>
+    </div>
+  );
+}
+
 function HomeCommandCenter({
   status,
   localVisionStatus,
@@ -3138,11 +3333,14 @@ function HomeCommandCenter({
   geminiStatus,
   nvidiaStatus,
   recentFiles,
+  recentSearches,
+  onRunRecentSearch,
   nvidiaEnabled,
   onPrepareFiles,
   onPrepareVision,
   onSettings,
   autoSetupJob,
+  ollamaInstall,
 }: {
   status: IndexStatus | null;
   localVisionStatus: LocalVisionStatus | null;
@@ -3151,12 +3349,30 @@ function HomeCommandCenter({
   geminiStatus: string;
   nvidiaStatus: string;
   recentFiles: IndexedFile[];
+  recentSearches: string[];
+  onRunRecentSearch: (q: string) => void;
   nvidiaEnabled: boolean;
   onPrepareFiles: () => void | Promise<void>;
   onPrepareVision: () => void | Promise<void>;
   onSettings: () => void;
   autoSetupJob: AutoSetupJob | null;
+  ollamaInstall: { label: string; progress: number; detail?: string; running: boolean } | null;
 }) {
+  // "Pronto" = AI locale installata (se in modalita locale) E indice al 100%.
+  // Quando pronto, la home mostra i recenti al posto delle card di stato/spiegazione.
+  const [aiReady, setAiReady] = useState(!LOCAL_ONLY);
+  useEffect(() => {
+    if (!LOCAL_ONLY) { setAiReady(true); return; }
+    let cancelled = false;
+    const tick = async () => {
+      const oi = await safeInvoke<{ progress: number; running: boolean } | null>("get_ollama_install_status", {}, null);
+      if (cancelled || !oi) return;
+      setAiReady(!oi.running && (oi.progress ?? 0) >= 100);
+    };
+    const t = window.setInterval(() => void tick(), 2500);
+    void tick();
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, []);
   const discovered = status?.filesDiscovered ?? 0;
   const indexed = status?.filesIndexed ?? 0;
   const progress = Math.max(0, Math.min(100, Math.round(status?.progress ?? (indexed ? 100 : 0))));
@@ -3181,68 +3397,77 @@ function HomeCommandCenter({
   const autoSetupDone = autoSetupJob?.status === "done";
   const autoSetupFailed = autoSetupJob?.status === "failed";
   const autoSetupProgress = Math.max(0, Math.min(100, autoSetupJob?.progress ?? 0));
-  const autoSetupTitle = autoSetupJob?.title || "Sto preparando Trova";
   const autoSetupMessage = autoSetupJob?.message || "Scarico modelli e creo l'indice in background.";
+
+  const indexReady = indexed > 0 && progress >= 100;
+  const ready = indexReady && aiReady;
+  const hasRecentActivity = recentFiles.length > 0 || recentSearches.length > 0;
+  const showRecentActivity = indexReady && hasRecentActivity;
 
   return (
     <section className="home-command-center" aria-label="Stato ricerca Trova">
-      <div className="home-feature-carousel" aria-label="Cosa puo cercare Trova">
-        {setupStoryCards.slice(0, 4).map((card) => (
-          <article className="home-feature-slide" key={card.title}>
-            <img src={card.image} alt="" aria-hidden="true" />
-            <div>
-              <strong>{card.title}</strong>
-              <span>{card.text}</span>
+      {ready ? (
+        // Pronto: niente card di stato/spiegazione, mostra i recenti
+        <HomeRecentPanel
+          recentFiles={recentFiles}
+          recentSearches={recentSearches}
+          onRunRecentSearch={onRunRecentSearch}
+          nvidiaEnabled={nvidiaEnabled}
+        />
+      ) : (
+        <>
+          <div className="home-feature-carousel" aria-label="Cosa puo cercare Trova">
+            {setupStoryCards.slice(0, 4).map((card) => (
+              <article className="home-feature-slide" key={card.title}>
+                <img src={card.image} alt="" aria-hidden="true" />
+                <div>
+                  <strong>{card.title}</strong>
+                  <span>{card.text}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {autoSetupFailed && (
+            <article className="home-autosetup-banner failed" role="status" aria-live="polite">
+              <div className="home-autosetup-icon">
+                <GeneratedIcon name="shield" size={36} />
+              </div>
+              <div className="home-autosetup-copy">
+                <strong>Qualcosa non va</strong>
+                <span>{autoSetupMessage}</span>
+              </div>
+            </article>
+          )}
+          <article className="home-search-status-card">
+            <div className="home-status-icon document">
+              <GeneratedIcon name="database" size={48} />
             </div>
+            <div className="home-status-copy">
+              <strong>Ricerca nei file</strong>
+              <span>{fileStatus}</span>
+            </div>
+            <span className="home-status-percent">{progress}%</span>
+            <div className="home-status-progress" aria-label="Avanzamento ricerca nei file">
+              <span style={{ width: `${progress}%` }} />
+            </div>
+            <div className="home-status-meta">
+              <span><i /> Documenti base</span>
+              <span>{fileDetail}</span>
+            </div>
+            <LocalAiDownloadBanner />
           </article>
-        ))}
-      </div>
 
-      {(autoSetupRunning || autoSetupFailed) && (
-        <article className={`home-autosetup-banner ${autoSetupFailed ? "failed" : "running"}`} role="status" aria-live="polite">
-          <div className="home-autosetup-icon">
-            <GeneratedIcon name={autoSetupFailed ? "shield" : "database"} size={36} />
-          </div>
-          <div className="home-autosetup-copy">
-            <strong>{autoSetupFailed ? "Qualcosa non va" : autoSetupTitle}</strong>
-            <span>{autoSetupMessage}</span>
-          </div>
-          <div className="home-autosetup-percent" aria-hidden="true">{autoSetupProgress}%</div>
-          <div className="home-autosetup-bar" aria-label="Avanzamento preparazione" aria-valuemin={0} aria-valuemax={100} aria-valuenow={autoSetupProgress} role="progressbar">
-            <span style={{ width: `${autoSetupProgress}%` }} />
-          </div>
-        </article>
+          {showRecentActivity && (
+            <HomeRecentPanel
+              recentFiles={recentFiles}
+              recentSearches={recentSearches}
+              onRunRecentSearch={onRunRecentSearch}
+              nvidiaEnabled={nvidiaEnabled}
+            />
+          )}
+        </>
       )}
-      {autoSetupDone && (
-        <article className="home-autosetup-banner done" role="status">
-          <div className="home-autosetup-icon">
-            <Check size={32} strokeWidth={2.5} />
-          </div>
-          <div className="home-autosetup-copy">
-            <strong>Tutto pronto</strong>
-            <span>Trova ha preparato i tuoi file. Inizia a cercare.</span>
-          </div>
-        </article>
-      )}
-      <article className="home-search-status-card">
-        <div className="home-status-icon document">
-          <GeneratedIcon name="database" size={48} />
-        </div>
-        <div className="home-status-copy">
-          <strong>Ricerca nei file</strong>
-          <span>{fileStatus}</span>
-        </div>
-        <span className="home-status-percent">{progress}%</span>
-        <div className="home-status-progress" aria-label="Avanzamento ricerca nei file">
-          <span style={{ width: `${progress}%` }} />
-        </div>
-        <div className="home-status-meta">
-          <span><i /> Documenti base</span>
-          <span>{fileDetail}</span>
-        </div>
-      </article>
-
-      {recentFiles.length > 0 && <HomeRecentCarousel items={recentFiles} nvidiaEnabled={nvidiaEnabled} />}
 
       {status?.running && (
         <button className="home-command-primary" onClick={onPrepareFiles} disabled>
@@ -3254,26 +3479,87 @@ function HomeCommandCenter({
   );
 }
 
+function HomeRecentPanel({
+  recentFiles,
+  recentSearches,
+  onRunRecentSearch,
+  nvidiaEnabled,
+}: {
+  recentFiles: IndexedFile[];
+  recentSearches: string[];
+  onRunRecentSearch: (q: string) => void;
+  nvidiaEnabled: boolean;
+}) {
+  const hasAny = recentFiles.length > 0 || recentSearches.length > 0;
+  return (
+    <section className={`home-recent-panel home-recent-combined ${hasAny ? "" : "is-empty"}`} aria-label="Attivita recenti">
+      {hasAny ? (
+        <div className="home-recent-head">
+          <strong>Riprendi da dove eri rimasto</strong>
+          <span>Ricerche e file usati di recente</span>
+        </div>
+      ) : (
+        <div className="home-recent-empty">
+          <span className="home-recent-empty-ghost" aria-hidden="true" />
+          <span className="home-recent-empty-icon" aria-hidden="true">
+            <Search size={28} />
+          </span>
+          <div>
+            <strong>Dimmi cosa vuoi ritrovare.</strong>
+            <span>Scrivi come lo ricordi: un titolo, una frase nel PDF, una scena in una foto o anche solo un dettaglio.</span>
+          </div>
+        </div>
+      )}
+      {recentSearches.length > 0 && (
+        <div className="home-recent-section">
+          <div className="home-recent-subhead">
+            <strong>Ricerche recenti</strong>
+            <span>Tocca per rifare la ricerca</span>
+          </div>
+          <div className="home-recent-chips">
+            {recentSearches.map((q) => (
+              <button type="button" key={q} className="home-recent-chip" onClick={() => onRunRecentSearch(q)}>
+                <Search size={15} />
+                <span>{q}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {recentFiles.length > 0 && (
+        <div className="home-recent-section">
+          <div className="home-recent-subhead">
+            <strong>Cronologia</strong>
+            <span>File aperti da Trova</span>
+          </div>
+          <HomeRecentCarousel items={recentFiles} nvidiaEnabled={nvidiaEnabled} />
+        </div>
+      )}
+    </section>
+  );
+}
+
 function HomeRecentCarousel({ items, nvidiaEnabled }: { items: IndexedFile[]; nvidiaEnabled: boolean }) {
   return (
-    <section className="home-recent-panel" aria-label="Cronologia file aperti">
-      <div className="home-recent-head">
-        <strong>Cronologia</strong>
-        <span>File aperti da Trova</span>
-      </div>
-      <div className="home-recent-carousel">
-        {items.map((item) => (
-          <HomeRecentCard key={`${item.id}-${item.path}`} item={item} nvidiaEnabled={nvidiaEnabled} />
-        ))}
-      </div>
-    </section>
+    <div className="home-recent-carousel" aria-label="Cronologia file aperti">
+      {items.map((item) => (
+        <HomeRecentCard key={`${item.id}-${item.path}`} item={item} nvidiaEnabled={nvidiaEnabled} />
+      ))}
+    </div>
   );
 }
 
 function HomeRecentCard({ item, nvidiaEnabled }: { item: IndexedFile; nvidiaEnabled: boolean }) {
   const [previewSrc, setPreviewSrc] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const icon = iconFor(item);
+  const materialIcon = (() => {
+    if (item.kind === "image") return <ImageIcon className="material-line-icon" size={30} />;
+    if (item.kind === "audio") return <Music2 className="material-line-icon" size={30} />;
+    if (item.kind === "video") return <Video className="material-line-icon" size={30} />;
+    if (item.kind === "code") return <Code2 className="material-line-icon" size={30} />;
+    if (item.kind === "archive") return <Archive className="material-line-icon" size={30} />;
+    return <FileText className="material-line-icon" size={30} />;
+  })();
 
   useEffect(() => {
     let cancelled = false;
@@ -3295,7 +3581,7 @@ function HomeRecentCard({ item, nvidiaEnabled }: { item: IndexedFile; nvidiaEnab
     <>
       <button type="button" className="home-recent-card" onClick={() => setPreviewOpen(true)}>
         <span className={`home-recent-thumb ${item.kind}`}>
-          {previewSrc ? <img src={previewSrc} alt="" /> : <GeneratedIcon name={icon} size={38} />}
+          {previewSrc ? <img src={previewSrc} alt="" /> : materialIcon}
         </span>
         <span className="home-recent-name">{item.name}</span>
         <small>{displayPathName(item.path)}</small>
@@ -3314,23 +3600,12 @@ function LiquidGlassSurface({
   className?: string;
   children: React.ReactNode;
 }) {
-  const isSearch = variant === "search";
-
+  // Effetto "liquid glass" disattivato: i filtri SVG + tracking mouse erano pesantissimi
+  // sulla GPU (iGPU) e mettevano un layer sopra l'input, bloccando i click. Reso un
+  // contenitore semplice: stessa impaginazione, niente effetto pesante.
   return (
     <div className={`liquid-glass-host liquid-glass-${variant} ${className}`.trim()} data-liquid-glass-surface={variant}>
-      <LiquidGlass
-        className="liquid-glass-core"
-        mode="standard"
-        displacementScale={isSearch ? 64 : 54}
-        blurAmount={isSearch ? 0.1 : 0.085}
-        saturation={130}
-        aberrationIntensity={2}
-        elasticity={isSearch ? 0.35 : 0.24}
-        cornerRadius={isSearch ? 999 : 22}
-        padding="0"
-      >
-        <div className="liquid-glass-content">{children}</div>
-      </LiquidGlass>
+      <div className="liquid-glass-content">{children}</div>
     </div>
   );
 }
@@ -3602,6 +3877,7 @@ function SettingsPanel({
   onStartCaptureHotkey,
   onCaptureHotkeyKeydown,
   onSaveHotkey,
+  onPreviewSpotlight,
   ollamaInstall,
   onInstallOllamaGemma,
   onReloadAiStatus,
@@ -3657,11 +3933,12 @@ function SettingsPanel({
   aiProviderStatus: { providers: Array<{ id: string; label: string; configured: boolean; models?: Array<{ key: string; label: string; category?: string }>; hint?: string }>; activeProvider: string; activeModel: string } | null;
   aiProviderConfig: { provider: string; modelKey: string; agentEnabled: boolean };
   onSaveAiProvider: (config: { provider: string; modelKey: string; agentEnabled: boolean }) => void;
-  hotkeyConfig: { shortcut: string; mode: string; enabled: boolean };
+  hotkeyConfig: HotkeyConfig;
   capturingHotkey: boolean;
   onStartCaptureHotkey: () => void;
   onCaptureHotkeyKeydown: (event: React.KeyboardEvent) => void;
-  onSaveHotkey: (config: { shortcut: string; mode: string; enabled: boolean }) => void;
+  onSaveHotkey: (config: HotkeyConfig) => void;
+  onPreviewSpotlight: () => void;
   ollamaInstall: { label: string; progress: number; detail?: string; running: boolean } | null;
   onInstallOllamaGemma: () => void;
   onReloadAiStatus?: () => void;
@@ -3674,9 +3951,9 @@ function SettingsPanel({
   const enabledPaths = paths.filter((path) => path.enabled && !path.isExcluded);
   const excludedPaths = paths.filter((path) => path.isExcluded);
   const cloudPaths = enabledPaths.filter((path) => path.geminiEnabled);
-  const [activeTab, setActiveTab] = useState<"overview" | "folders" | "components" | "doctor" | "vision" | "remote" | "access" | "cloud" | "advanced">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "folders" | "components" | "doctor" | "vision" | "shortcut" | "remote" | "access" | "cloud" | "advanced">("overview");
   const settingsTabs: Array<{
-    id: "overview" | "folders" | "components" | "doctor" | "vision" | "remote" | "access" | "cloud" | "advanced";
+    id: "overview" | "folders" | "components" | "doctor" | "vision" | "shortcut" | "remote" | "access" | "cloud" | "advanced";
     label: string;
     icon: GeneratedIconName;
   }> = [
@@ -3685,6 +3962,7 @@ function SettingsPanel({
     { id: "components", label: "Preparazione", icon: "tools" },
     { id: "doctor", label: "Stato app", icon: "shield" },
     { id: "vision", label: "Foto e video", icon: "vision" },
+    { id: "shortcut", label: "Scorciatoia", icon: "search" },
     { id: "remote", label: "Archivi esterni", icon: "remote" },
     { id: "access", label: "Altri dispositivi", icon: "code" },
     { id: "cloud", label: "Online", icon: "cloud" },
@@ -3696,6 +3974,7 @@ function SettingsPanel({
     components: ["Prepara tutto", "Installa, scarica e sistema quello che serve in background.", settingsComponentsArt],
     doctor: ["Stato app", "Messaggi chiari: pronto, preparo, serve conferma o riprova.", settingsComponentsArt],
     vision: ["Foto e video", "Trova immagini simili, scene nei video e testo nelle scansioni.", settingsVisionArt],
+    shortcut: ["Barra rapida", "Apri solo una casella di ricerca sopra qualsiasi programma.", settingsOverviewArt],
     remote: ["Archivi esterni", "Aggiungi dischi, cartelle condivise o cloud solo quando vuoi.", settingsRemoteArt],
     access: ["Usa da altri dispositivi", "Attiva solo se vuoi cercare da un altro browser.", settingsRemoteArt],
     cloud: ["Online", "Google e NVIDIA restano spenti finche non li scegli.", settingsCloudArt],
@@ -3711,7 +3990,6 @@ function SettingsPanel({
     <section className="settings-panel settings-console">
       <div className="settings-head">
         <div className="settings-brand">
-          <span className="google-mark" />
           <strong>Impostazioni</strong>
         </div>
         <div className="settings-head-search">
@@ -3743,6 +4021,7 @@ function SettingsPanel({
               {tab.id === "components" && <Wrench className="material-line-icon" size={20} />}
               {tab.id === "doctor" && <ShieldCheck className="material-line-icon" size={20} />}
               {tab.id === "vision" && <ImageIcon className="material-line-icon" size={20} />}
+              {tab.id === "shortcut" && <Keyboard className="material-line-icon" size={20} />}
               {tab.id === "remote" && <HardDrive className="material-line-icon" size={20} />}
               {tab.id === "access" && <Code2 className="material-line-icon" size={20} />}
               {tab.id === "cloud" && <Cloud className="material-line-icon" size={20} />}
@@ -3754,13 +4033,10 @@ function SettingsPanel({
       </nav>
 
       {activeTab !== "overview" && (
-        <section className={`settings-tab-stage settings-tab-${activeTab}`}>
-          <div className="settings-tab-copy">
-            <span>{activeTabCopy[0]}</span>
-            <strong>{activeTabCopy[1]}</strong>
-          </div>
-          <img className="settings-tab-art" src={activeTabCopy[2]} alt="" />
-        </section>
+        <div className={`settings-tab-header settings-tab-${activeTab}`}>
+          <span>{activeTabCopy[0]}</span>
+          <strong>{activeTabCopy[1]}</strong>
+        </div>
       )}
 
       {activeTab === "overview" && (
@@ -4151,6 +4427,16 @@ function SettingsPanel({
 
       {activeTab === "cloud" && (
         <div className="settings-tab-panel">
+          <section className="settings-privacy-panel color-green">
+            <div className="settings-section-title">
+              <GeneratedIcon name="shield" size={34} />
+              <div>
+                <strong>Locale di default</strong>
+                <span>Trova usa solo AI sul tuo PC. NVIDIA e Gemini si attivano se inserisci la loro chiave qui sotto.</span>
+              </div>
+            </div>
+            <p className="settings-help-text">Senza chiave nessun dato esce dal dispositivo. Aggiungi una chiave per usare quel provider cloud.</p>
+          </section>
           <div className="settings-cloud-split">
             <section className="settings-privacy-panel color-blue">
               <div className="settings-section-title">
@@ -4192,16 +4478,22 @@ function SettingsPanel({
                 <span>Sceglie il provider che risponde quando chiedi qualcosa nella ricerca.</span>
               </div>
             </div>
-            <p className="settings-help-text">
-              <strong>Niente da scaricare per i cloud free:</strong> NVIDIA e Google rispondono via API, gratis nei loro free tier. NVIDIA Nemotron 49B + Llama 3.2 Vision e Gemma 4 27B multimodale (vede immagini) sono attivi senza download.
-              <br />Solo Ollama / LM Studio sono modelli che girano interamente offline sul tuo PC e richiedono il download dei pesi (10-50GB) attraverso la loro app.
-            </p>
+            {LOCAL_ONLY ? (
+              <p className="settings-help-text">
+                <strong>Tutto in locale, automatico:</strong> Trova installa da solo l'AI offline (Ollama + Gemma) al primo avvio e la usa senza che tu faccia nulla. Funziona anche senza internet.
+              </p>
+            ) : (
+              <p className="settings-help-text">
+                <strong>Niente da scaricare per i cloud free:</strong> NVIDIA e Google rispondono via API, gratis nei loro free tier. NVIDIA Nemotron 49B + Llama 3.2 Vision e Gemma 4 27B multimodale (vede immagini) sono attivi senza download.
+                <br />Solo Ollama / LM Studio sono modelli che girano interamente offline sul tuo PC e richiedono il download dei pesi (10-50GB) attraverso la loro app.
+              </p>
+            )}
             {/* Card installazione Gemma offline (auto, nabbi-friendly) */}
             {!aiProviderStatus?.providers?.find((p) => p.id === "ollama" && p.configured) && (
               <div className="ai-ollama-callout">
                 <div>
-                  <strong>Vuoi Gemma 4 anche offline (100% privato)?</strong>
-                  <span>Clicco e basta. Trova scarica Ollama (~600MB) + Gemma 3 4B (~3GB) in background. Funziona senza internet dopo l'installazione.</span>
+                  <strong>{LOCAL_ONLY ? "AI locale (Gemma) — installazione automatica" : "Vuoi Gemma 4 anche offline (100% privato)?"}</strong>
+                  <span>{LOCAL_ONLY ? "Trova scarica da solo Ollama (~600MB) + Gemma 4 leggero (~3GB) in background. Non devi fare nulla, funziona senza internet." : "Clicco e basta. Trova scarica Ollama (~600MB) + Gemma 4 leggero (~3GB) in background. Funziona senza internet dopo l'installazione."}</span>
                 </div>
                 {ollamaInstall?.running ? (
                   <div className="ai-ollama-progress">
@@ -4216,7 +4508,7 @@ function SettingsPanel({
                   <div className="ai-ollama-done">✅ {ollamaInstall.detail || "Pronto"}</div>
                 ) : (
                   <button type="button" className="settings-link-button primary" onClick={() => onInstallOllamaGemma()}>
-                    Installa Gemma offline (auto)
+                    {LOCAL_ONLY ? "Installazione automatica in avvio… (o clicca per forzare)" : "Installa Gemma offline (auto)"}
                   </button>
                 )}
               </div>
@@ -4292,7 +4584,7 @@ function SettingsPanel({
                     checked={aiProviderConfig.provider === "auto"}
                     onChange={() => onSaveAiProvider({ ...aiProviderConfig, provider: "auto", modelKey: aiProviderConfig.modelKey || "nemotron-super-49b" })}
                   />
-                  <span><strong>Scegli da solo</strong><i>NVIDIA → Ollama → LM Studio → Gemini</i></span>
+                  <span><strong>Scegli da solo</strong><i>Locale prima, poi cloud se hai la chiave</i></span>
                 </label>
               </div>
             </div>
@@ -4379,6 +4671,82 @@ function SettingsPanel({
         </div>
       )}
 
+      {activeTab === "shortcut" && (
+        <div className="settings-tab-panel settings-hotkey-panel">
+          <section className="settings-hotkey-hero">
+            <div className="settings-hotkey-copy">
+              <span className="settings-hotkey-kicker">Barra rapida</span>
+              <h3>Una casella sopra tutto, come Spotlight.</h3>
+              <p>
+                Quando lo switch e attivo, premi la scorciatoia e Trova apre solo la ricerca:
+                niente finestra completa, niente pannelli, solo input e risultati veloci.
+              </p>
+              <label className="settings-cloud-toggle large hotkey-master-switch">
+                <input
+                  type="checkbox"
+                  checked={hotkeyConfig.enabled}
+                  onChange={(event) => onSaveHotkey({
+                    ...hotkeyConfig,
+                    shortcut: hotkeyConfig.shortcut || DEFAULT_HOTKEY_CONFIG.shortcut,
+                    mode: "spotlight",
+                    enabled: event.currentTarget.checked,
+                  })}
+                />
+                Attiva con tastiera
+              </label>
+            </div>
+            <div className="settings-hotkey-preview" aria-hidden="true">
+              <div className="settings-hotkey-preview-bar">
+                <GeneratedIcon name="search" size={24} />
+                <span>Cerca in Trova...</span>
+                <strong>{hotkeyConfig.shortcut || DEFAULT_HOTKEY_CONFIG.shortcut}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-privacy-panel settings-hotkey-card">
+            <div className="settings-section-title">
+              <GeneratedIcon name="search" size={34} />
+              <div>
+                <strong>Tasti della tastiera</strong>
+                <span>Scegli la combinazione globale. Di default e pronta Control+Spazio.</span>
+              </div>
+            </div>
+            <div className="hotkey-config-row hotkey-config-row-polished">
+              <button
+                type="button"
+                className={`hotkey-capture ${capturingHotkey ? "capturing" : ""}`}
+                onClick={onStartCaptureHotkey}
+                onKeyDown={capturingHotkey ? onCaptureHotkeyKeydown : undefined}
+              >
+                {capturingHotkey
+                  ? (hotkeyConfig.shortcut ? `${hotkeyConfig.shortcut} + …  (premi il tasto finale)` : "Premi i tasti ora… (Esc per annullare)")
+                  : (hotkeyConfig.shortcut || DEFAULT_HOTKEY_CONFIG.shortcut)}
+              </button>
+              <div className="hotkey-defaults" aria-label="Scorciatoie consigliate">
+                {["Control+Space", "Alt+Space", "Control+Alt+Space"].map((shortcut) => (
+                  <button
+                    type="button"
+                    key={shortcut}
+                    className={hotkeyConfig.shortcut === shortcut ? "active" : ""}
+                    onClick={() => onSaveHotkey({ ...hotkeyConfig, shortcut, mode: "spotlight", enabled: true })}
+                  >
+                    {shortcut.split("+").join(" + ")}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="settings-inline-action hotkey-preview-button" onClick={onPreviewSpotlight}>
+                <Search size={18} aria-hidden="true" />
+                <span>Prova barra rapida</span>
+              </button>
+            </div>
+            <p className="settings-help-text">
+              Funziona nell'app desktop installata. Se una combinazione e gia usata dal sistema, scegli un'altra.
+            </p>
+          </section>
+        </div>
+      )}
+
       {activeTab === "advanced" && (
         <div className="settings-tab-panel settings-advanced-grid">
           <section className="settings-privacy-panel color-red">
@@ -4396,42 +4764,6 @@ function SettingsPanel({
             </div>
           </section>
 
-          <section className="settings-privacy-panel" style={{ gridColumn: "1 / -1" }}>
-            <div className="settings-section-title">
-              <GeneratedIcon name="search" size={34} />
-              <div>
-                <strong>Scorciatoia globale</strong>
-                <span>Apri Trova da qualsiasi app con una combinazione di tasti.</span>
-              </div>
-            </div>
-            <p className="settings-help-text">Premi "Registra tasti" e poi la combinazione che vuoi (es. Control+Spazio). Funziona solo nell'app desktop installata.</p>
-            <div className="hotkey-config-row">
-              <button
-                type="button"
-                className={`hotkey-capture ${capturingHotkey ? "capturing" : ""}`}
-                onClick={onStartCaptureHotkey}
-                onKeyDown={capturingHotkey ? onCaptureHotkeyKeydown : undefined}
-              >
-                {capturingHotkey ? "Premi i tasti ora..." : (hotkeyConfig.shortcut || "Nessuna scorciatoia")}
-              </button>
-              <label className="hotkey-mode-option">
-                <input type="radio" name="hotkey-mode" checked={hotkeyConfig.mode === "spotlight"}
-                  onChange={() => onSaveHotkey({ ...hotkeyConfig, mode: "spotlight" })} />
-                <span>Casella di ricerca al centro (veloce)</span>
-              </label>
-              <label className="hotkey-mode-option">
-                <input type="radio" name="hotkey-mode" checked={hotkeyConfig.mode === "app"}
-                  onChange={() => onSaveHotkey({ ...hotkeyConfig, mode: "app" })} />
-                <span>Apri il programma intero</span>
-              </label>
-              <label className="settings-cloud-toggle large">
-                <input type="checkbox" checked={hotkeyConfig.enabled}
-                  onChange={(event) => onSaveHotkey({ ...hotkeyConfig, enabled: event.currentTarget.checked })}
-                  disabled={!hotkeyConfig.shortcut} />
-                Attiva la scorciatoia globale
-              </label>
-            </div>
-          </section>
           <section className="settings-privacy-panel">
             <div className="settings-section-title">
               <GeneratedIcon name="settings" size={34} />
@@ -4809,6 +5141,9 @@ function LocalAskPanel({
   query,
   answer,
   busy,
+  aiInstalling = false,
+  aiNotReady = false,
+  aiInstallLabel = "",
   semanticStatus,
   chatMessages = [],
   agentMode = false,
@@ -4844,6 +5179,9 @@ function LocalAskPanel({
   query: string;
   answer: LocalAskAnswer | null;
   busy: boolean;
+  aiInstalling?: boolean;
+  aiNotReady?: boolean;
+  aiInstallLabel?: string;
   semanticStatus: SemanticStatus | null;
   chatMessages?: { role: "user" | "assistant"; content: string; citations?: { filePath?: string; snippet?: string; name?: string }[]; toolsUsed?: { fn: string; args: Record<string, unknown> }[] }[];
   agentMode?: boolean;
@@ -4880,16 +5218,29 @@ function LocalAskPanel({
     : "Domande in attesa della preparazione";
   const hasChat = chatMessages.length > 0;
   const fallbackAnswer = !hasChat && answer ? answer : null;
+  // L'AI locale non è ancora pronta (Gemma in download o non installata):
+  // blocco la casella/bottoni cosi l'utente non clicca a vuoto.
+  const askDisabled = busy || aiNotReady;
 
   return (
     <section className="local-ask-panel">
       <div className="local-ask-head">
-        <GeneratedIcon name="semantic" size={22} />
-        <strong>Fai una domanda</strong>
-        <span>{semanticLabel}</span>
-        {(activeProviderLabel || activeModelLabel) && (
-          <span className="local-ask-model" title="Modello AI attivo">{activeModelLabel || activeProviderLabel}</span>
-        )}
+        <span className="local-ask-icon" aria-hidden="true">
+          <GeneratedIcon name="semantic" size={22} />
+        </span>
+        <div className="local-ask-copy">
+          <strong>Fai una domanda</strong>
+          <span>{semanticLabel}</span>
+          {(activeProviderLabel || activeModelLabel) && (
+            <span className="local-ask-model" title="Modello AI attivo">{activeModelLabel || activeProviderLabel}</span>
+          )}
+          {aiNotReady && (
+            <span className={`local-ask-aistate ${aiInstalling ? "installing" : "blocked"}`} title="Stato AI locale">
+              {aiInstalling && <span className="local-ask-aistate-spinner" aria-hidden="true" />}
+              {aiInstallLabel}
+            </span>
+          )}
+        </div>
         <div className="local-ask-actions">
           {onToggleAgent && (
             <button
@@ -4905,21 +5256,6 @@ function LocalAskPanel({
           {onNewThread && hasChat && (
             <button type="button" className="local-ask-toggle" onClick={onNewThread} title="Inizia una nuova conversazione">
               <span>Nuova</span>
-            </button>
-          )}
-          {onShowHistory && (
-            <button type="button" className="local-ask-toggle subtle" onClick={onShowHistory} title="Cronologia conversazioni">
-              <Clock3 size={14} />
-            </button>
-          )}
-          {onExport && hasChat && (
-            <button type="button" className="local-ask-toggle subtle" onClick={onExport} title="Esporta conversazione in Markdown">
-              <Download size={14} />
-            </button>
-          )}
-          {onOpenSettings && (
-            <button type="button" className="local-ask-toggle subtle" onClick={onOpenSettings} title="Cambia provider AI o modello">
-              <GeneratedIcon name="settings" size={14} />
             </button>
           )}
         </div>
@@ -5028,23 +5364,25 @@ function LocalAskPanel({
             else onQuestionChange(value);
           }}
           onKeyDown={(event) => {
+            if (askDisabled) return;
             if (event.key === "Enter" && !showMentionDropdown) onAsk();
             if (event.key === "Escape") {
               // Chiudi dropdown mention con esc
             }
           }}
-          placeholder={hasChat ? "Continua la conversazione... (usa @nome per riferirti a un file)" : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti (digita @ per menzionare un file)"}
+          disabled={aiNotReady}
+          placeholder={aiNotReady ? aiInstallLabel : hasChat ? "Continua la conversazione... (usa @nome per riferirti a un file)" : query.trim() ? `Domanda su "${query.trim()}"` : "Chiedi qualcosa ai file pronti (digita @ per menzionare un file)"}
         />
         {onToggleDictation && (
           <button onClick={onToggleDictation} className={`local-mic-button ${isListening ? "listening" : ""}`} title={isListening ? "Ferma dettatura" : "Detta con il microfono"} type="button">
             <Mic size={18} />
           </button>
         )}
-        <button onClick={onAsk} disabled={busy}>
+        <button onClick={onAsk} disabled={askDisabled} title={aiNotReady ? aiInstallLabel : undefined}>
           <GeneratedIcon name="search" size={18} />
-          <span>{busy ? "Cerco..." : "Chiedi"}</span>
+          <span>{aiInstalling ? "Preparo l'AI…" : busy ? "Cerco..." : "Chiedi"}</span>
         </button>
-        <button onClick={onSimilar} disabled={busy}>
+        <button onClick={onSimilar} disabled={askDisabled} title={aiNotReady ? aiInstallLabel : undefined}>
           <GeneratedIcon name="sparkle" size={18} />
           <span>Simili</span>
         </button>
@@ -5197,6 +5535,15 @@ function ResultRow({
 
 function Preview({ item }: { item: IndexedFile }) {
   const [previewSrc, setPreviewSrc] = useState("");
+  const extension = (item.extension || item.kind || "file").replace(/^\./, "").toUpperCase();
+  const materialIcon = (() => {
+    if (item.kind === "image") return <ImageIcon className="material-line-icon" size={28} />;
+    if (item.kind === "audio") return <Music2 className="material-line-icon" size={28} />;
+    if (item.kind === "video") return <Video className="material-line-icon" size={28} />;
+    if (item.kind === "code") return <Code2 className="material-line-icon" size={28} />;
+    if (item.kind === "archive") return <Archive className="material-line-icon" size={28} />;
+    return <FileText className="material-line-icon" size={28} />;
+  })();
 
   useEffect(() => {
     let cancelled = false;
@@ -5223,7 +5570,13 @@ function Preview({ item }: { item: IndexedFile }) {
     );
   }
 
-  return <div className="no-preview">Nessuna preview reale</div>;
+  return (
+    <div className={`no-preview ${item.kind}`} aria-label={`Anteprima ${extension}`}>
+      <span className="no-preview-icon">{materialIcon}</span>
+      <strong>{extension}</strong>
+      <small>{displayPathName(item.path)}</small>
+    </div>
+  );
 }
 
 function FilePreviewModal({ item, nvidiaEnabled, onClose }: { item: IndexedFile; nvidiaEnabled: boolean; onClose: () => void }) {
@@ -5836,14 +6189,20 @@ function trovaWindowControl(action: "minimize" | "maximize" | "close") {
   }
 }
 
-function WindowChrome() {
+function WindowChrome({ onHome }: { onHome?: () => void }) {
   return (
     <>
       <div className="window-drag" data-tauri-drag-region aria-hidden="true" />
-      <div className="window-brand" data-tauri-drag-region>
+      <button
+        type="button"
+        className="window-brand"
+        onClick={onHome}
+        title="Torna alla home"
+        aria-label="Torna alla home"
+      >
         <span className="google-mark" aria-hidden="true" />
         <span className="window-brand-name">Trova</span>
-      </div>
+      </button>
       <div className="window-controls" aria-label="Controlli finestra">
         <button type="button" className="window-ctl minimize" onClick={() => trovaWindowControl("minimize")} aria-label="Riduci a icona" title="Riduci">
           <Minus size={18} />
@@ -6002,18 +6361,60 @@ function hashCode(value: string) {
 function SpotlightSearch() {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<IndexedFile[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", window.localStorage.getItem("trova.theme") === "dark");
+    document.body.classList.add("spotlight-mode");
     inputRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") void desktopInvoke("hide_spotlight_window", {}, null);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      document.body.classList.remove("spotlight-mode");
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
+
+  useEffect(() => (
+    () => {
+      attachedFiles.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+    }
+  ), [attachedFiles]);
+
+  const addSpotlightFiles = (fileList: FileList | null) => {
+    const list = Array.from(fileList || []);
+    if (!list.length) return;
+    const next = list.map((file) => {
+      const kind = classifyAttachedFile(file);
+      return { file, kind, previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined };
+    });
+    setAttachedFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+      return next.slice(0, 1);
+    });
+    inputRef.current?.focus();
+  };
+
+  const clearSpotlightFile = () => {
+    setAttachedFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+      return [];
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    inputRef.current?.focus();
+  };
 
   useEffect(() => {
     const text = q.trim();
@@ -6043,16 +6444,61 @@ function SpotlightSearch() {
 
   return (
     <div className="spotlight-shell">
-      <div className="spotlight-box">
+      <div
+        className={`spotlight-box ${attachedFiles.length ? "with-file" : ""} ${isDraggingFile ? "dropping" : ""}`}
+        onDragOver={(event) => { event.preventDefault(); setIsDraggingFile(true); }}
+        onDragLeave={() => setIsDraggingFile(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setIsDraggingFile(false);
+          addSpotlightFiles(event.dataTransfer?.files || null);
+        }}
+      >
         <GeneratedIcon name="search" size={24} />
         <input
           ref={inputRef}
           value={q}
           onChange={(event) => setQ(event.currentTarget.value)}
           onKeyDown={(event) => { if (event.key === "Enter" && results[0]) openFile(results[0]); }}
-          placeholder="Cerca al volo nei tuoi file..."
+          placeholder={attachedFiles.length ? `Cerca o chiedi su ${attachedFiles[0].file.name}...` : "Cerca al volo nei tuoi file..."}
         />
         {busy && <span className="spotlight-spinner" />}
+        {attachedFiles[0] && (
+          <span className={`spotlight-file-chip kind-${attachedFiles[0].kind}`} title={attachedFiles[0].file.name}>
+            {attachedFiles[0].kind === "image" && attachedFiles[0].previewUrl
+              ? <img src={attachedFiles[0].previewUrl} alt="" />
+              : <Paperclip size={13} />}
+            <em>{attachedFiles[0].file.name}</em>
+            <button type="button" onClick={clearSpotlightFile} aria-label={`Rimuovi ${attachedFiles[0].file.name}`}>
+              <X size={12} />
+            </button>
+          </span>
+        )}
+        <button
+          type="button"
+          className="spotlight-add-file"
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Aggiungi file"
+          title="Aggiungi file"
+        >
+          <Plus size={22} strokeWidth={2.4} />
+        </button>
+        <button
+          type="button"
+          className="spotlight-close"
+          onClick={() => void desktopInvoke("hide_spotlight_window", {}, null)}
+          aria-label="Chiudi barra rapida"
+          title="Chiudi"
+        >
+          <X size={19} />
+        </button>
+        <input
+          ref={fileInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown,.md,.txt,.docx,.doc,.csv,.json,.html,.xml,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.rs,.go,.java,.c,.cpp,.sh"
+          onChange={(event) => { addSpotlightFiles(event.currentTarget.files); event.currentTarget.value = ""; }}
+        />
       </div>
       {results.length > 0 && (
         <div className="spotlight-results">
@@ -6080,6 +6526,10 @@ trovaGlobal.__trovaReactRoot = root;
 
 // Modalita spotlight: finestra leggera con solo la casella di ricerca al centro
 const isSpotlight = new URLSearchParams(window.location.search).has("spotlight");
+if (isSpotlight) {
+  document.documentElement.classList.add("spotlight-root");
+  document.body.classList.add("spotlight-mode");
+}
 
 root.render(
   <React.StrictMode>

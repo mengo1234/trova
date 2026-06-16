@@ -2462,7 +2462,7 @@ struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        HotkeyConfig { shortcut: String::new(), mode: "spotlight".into(), enabled: false }
+        HotkeyConfig { shortcut: "Control+Space".into(), mode: "spotlight".into(), enabled: false }
     }
 }
 
@@ -2511,10 +2511,12 @@ fn open_or_focus_spotlight(app: &tauri::AppHandle) -> Result<(), String> {
     let url = tauri::WebviewUrl::App("index.html?spotlight=1".into());
     let window = tauri::WebviewWindowBuilder::new(app, "spotlight", url)
         .title("Trova - Cerca")
-        .inner_size(720.0, 110.0)
+        .inner_size(760.0, 128.0)
         .center()
         .always_on_top(true)
         .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
         .resizable(false)
         .skip_taskbar(true)
         .build()
@@ -2574,6 +2576,17 @@ fn hide_spotlight_window(app: tauri::AppHandle) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        // Single-instance DEVE essere il primo plugin: una seconda invocazione del binario
+        // (es. dalla scorciatoia globale di GNOME su Wayland) viene inoltrata all'istanza viva.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if argv.iter().any(|a| a == "--spotlight") {
+                let _ = open_or_focus_spotlight(app);
+            } else if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -2587,6 +2600,10 @@ pub fn run() {
             // Registra la hotkey globale salvata dall'utente (se presente)
             let handle = app.handle().clone();
             register_saved_global_shortcut(&handle);
+            // Se l'app viene lanciata direttamente con --spotlight (prima istanza), apri subito la barra
+            if std::env::args().any(|a| a == "--spotlight") {
+                let _ = open_or_focus_spotlight(&handle);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

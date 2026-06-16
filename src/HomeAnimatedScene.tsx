@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { memo, type CSSProperties } from "react";
 
 type Phase = {
   id: string;
@@ -94,7 +94,7 @@ const phases: Phase[] = [
   },
 ];
 
-export function HomeAnimatedScene() {
+export const HomeAnimatedScene = memo(function HomeAnimatedScene() {
   return (
     <div className="home-scene" aria-hidden="true">
       {phases.map((phase, index) => (
@@ -113,7 +113,6 @@ export function HomeAnimatedScene() {
       ))}
       <div className="home-cartoon-sky-actors">
         <span className="home-cartoon-sun" />
-        <span className="home-cartoon-moon" />
       </div>
       <div className="home-cartoon-clouds">
         <span />
@@ -176,7 +175,7 @@ export function HomeAnimatedScene() {
       <div className="home-scene-glow" />
     </div>
   );
-}
+});
 
 function CartoonPhase({ phase }: { phase: Phase }) {
   const isRain = phase.id === "rain";
@@ -189,8 +188,6 @@ function CartoonPhase({ phase }: { phase: Phase }) {
       <rect y="250" width="1600" height="650" fill={phase.haze} opacity={isNight ? 0.18 : 0.42} />
 
       {isSunset && <Sun x={1004} y={404} size={82} warm />}
-      {isNight && <Moon />}
-
       <Cloud x={96} y={126} scale={0.74} color={phase.cloud} opacity={isNight ? 0.76 : 0.88} />
       <Cloud x={612} y={82} scale={0.46} color={phase.cloud} opacity={isSunset ? 0.54 : 0.72} />
       <Cloud x={1032} y={78} scale={1.18} color={phase.cloud} opacity={isNight ? 0.58 : 0.9} />
@@ -241,16 +238,6 @@ function Sun({ x, y, size, warm = false }: { x: number; y: number; size: number;
         const y2 = y + Math.sin(rad) * (size + 58);
         return <line key={angle} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth="12" strokeLinecap="round" opacity={warm ? 0.38 : 0.8} />;
       })}
-    </g>
-  );
-}
-
-function Moon() {
-  return (
-    <g>
-      <circle cx="1305" cy="126" r="64" fill="#ffe082" />
-      <circle cx="1330" cy="106" r="66" fill="#0d47a1" />
-      <circle cx="1305" cy="126" r="92" fill="#ffe082" opacity="0.12" />
     </g>
   );
 }

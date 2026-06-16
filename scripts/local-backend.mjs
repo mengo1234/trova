@@ -55,6 +55,57 @@ const TROVA_CHAT_PROVIDER = process.env.TROVA_CHAT_PROVIDER || "auto"; // auto|n
 const TROVA_CHAT_MODEL_KEY = process.env.TROVA_CHAT_MODEL_KEY || "nemotron-super-49b";
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || "http://127.0.0.1:1234";
+
+// ============================================================
+// LOCALE-FIRST, CLOUD OPT-IN VIA CHIAVE
+// Di default Trova usa solo AI on-device (embeddings locali, vision ONNX,
+// Tesseract OCR, Whisper, Ollama/LM Studio). NVIDIA e Gemini si ATTIVANO
+// solo se l'utente inserisce la rispettiva chiave (env, file o tab Online).
+// TROVA_FORCE_LOCAL=1 forza il blocco totale del cloud anche con chiave.
+const LOCAL_ONLY = true; // locale resta il default: provider, auto-install, UI local-first
+const FORCE_LOCAL = process.env.TROVA_FORCE_LOCAL === "1";
+// Provider AI locali consentiti, in ordine di preferenza
+const LOCAL_AI_PROVIDERS = ["ollama", "lmstudio"];
+// Host di inferenza cloud -> provider. La guardia li blocca solo se manca la chiave.
+const CLOUD_AI_HOSTS = {
+  "integrate.api.nvidia.com": "nvidia",
+  "generativelanguage.googleapis.com": "gemini",
+};
+// Stato chiavi cloud: una chiamata cloud passa SOLO se la chiave del provider esiste.
+const cloudKeyState = { nvidia: false, gemini: false };
+function cloudAllowed(provider) {
+  return !FORCE_LOCAL && Boolean(cloudKeyState[provider]);
+}
+async function refreshCloudKeyState() {
+  try {
+    cloudKeyState.nvidia = (await discoverNvidiaApiKeys().catch(() => [])).length > 0;
+  } catch {
+    cloudKeyState.nvidia = false;
+  }
+  cloudKeyState.gemini = Boolean(
+    normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY),
+  );
+  return cloudKeyState;
+}
+{
+  const realFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (input, init) => {
+    let url = "";
+    try {
+      url = typeof input === "string" ? input : input?.url || String(input);
+    } catch {
+      url = "";
+    }
+    for (const [host, provider] of Object.entries(CLOUD_AI_HOSTS)) {
+      if (url.includes(host) && !cloudAllowed(provider)) {
+        return Promise.reject(
+          new Error(`AI cloud (${provider}) disattivata: inserisci la chiave ${provider.toUpperCase()} nel tab Online per usarla.`),
+        );
+      }
+    }
+    return realFetch(input, init);
+  };
+}
 const TEXT_EMBEDDING_MODEL = process.env.TROVA_TEXT_EMBEDDING_MODEL || "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 const LEXICAL_EMBEDDING_MODEL = "trova-lexical-v1";
 const VISUAL_FINGERPRINT_MODEL = "trova-fingerprint-v1";
@@ -148,9 +199,35 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, "127.0.0.1", () => {
   console.log(`Trova local API pronta su http://127.0.0.1:${PORT}`);
+  void refreshCloudKeyState();
   void resumeWatcherIfNeeded();
   void resumeRemoteAccessIfNeeded();
+  void autoEnsureLocalAi();
 });
+
+// Flag per non ri-lanciare l'auto-install piu volte nella stessa sessione
+let autoLocalAiKicked = false;
+
+/**
+ * Modalita solo locale, completamente automatica:
+ * se non c'e nessun LLM locale raggiungibile (Ollama / LM Studio), avvia da solo
+ * l'installazione di Ollama + Gemma in background. L'utente non deve cliccare nulla.
+ */
+async function autoEnsureLocalAi() {
+  try {
+    if (autoLocalAiKicked) return;
+    const provider = await resolveAiProvider("ollama", TROVA_CHAT_MODEL_KEY).catch(() => null);
+    if (provider) return; // un LLM locale e gia disponibile
+    // Usa il mirror IN MEMORIA (per-processo): un running:true persistito sul file
+    // puo essere stantio (install uccisa da un riavvio) e bloccherebbe il ri-avvio.
+    if (ollamaInstallProgress?.running) return; // installazione realmente in corso ora
+    autoLocalAiKicked = true;
+    console.log("Trova: nessuna AI locale trovata, avvio installazione automatica di Ollama + Gemma...");
+    void installLocalComponent("ollama-gemma").catch(() => undefined);
+  } catch {
+    // best-effort: se fallisce, l'utente puo sempre usare il bottone manuale
+  }
+}
 
 async function handleCommand(command, args) {
   if (command === "get_default_watch_paths") {
@@ -478,6 +555,7 @@ async function handleCommand(command, args) {
     return aiProviderStatus();
   }
   if (command === "get_ollama_install_status") {
+    if (ollamaInstallProgress) return ollamaInstallProgress;
     const state = await loadState();
     return state.ollamaInstall || { label: "non avviata", progress: 0, running: false };
   }
@@ -495,6 +573,7 @@ async function handleCommand(command, args) {
     await saveState(state);
     // Imposta anche env per la sessione corrente
     process.env.GEMINI_API_KEY = key;
+    await refreshCloudKeyState();
     return { ok: true };
   }
   if (command === "clear_gemini_api_key") {
@@ -502,6 +581,7 @@ async function handleCommand(command, args) {
     delete state.geminiApiKey;
     await saveState(state);
     delete process.env.GEMINI_API_KEY;
+    await refreshCloudKeyState();
     return { ok: true };
   }
   if (command === "ocr_image_nvidia") {
@@ -2209,7 +2289,7 @@ function findIndexEntry(index, target) {
 }
 
 async function summarizeFileWithNvidia(index, request) {
-  if (!request.consent) {
+  if (cloudAllowed("nvidia") && !request.consent) {
     throw new Error("Serve conferma: il riassunto AI invia il testo del file a NVIDIA.");
   }
   const target = String(request.filePath || request.path || request.id || "").trim();
@@ -2261,9 +2341,9 @@ async function summarizeFileWithNvidia(index, request) {
   const parsed = normalizeNvidiaSummary(content);
   const result = {
     ...parsed,
-    provider: "nvidia",
-    model: NVIDIA_CHAT_MODEL,
-    endpoint: NVIDIA_CHAT_URL,
+    provider: cloudAllowed("nvidia") ? "nvidia" : "local",
+    model: cloudAllowed("nvidia") ? NVIDIA_CHAT_MODEL : "ai-locale",
+    endpoint: cloudAllowed("nvidia") ? NVIDIA_CHAT_URL : OLLAMA_BASE_URL,
     filePath: entry.filePath,
     fileName: entry.name,
     contentChars: text.length,
@@ -2298,6 +2378,13 @@ async function nvidiaChatCompletion({ messages, temperature = 0.2, maxTokens = 1
       usefulFor: "controllare la UI senza usare credito API",
       questions: ["Di cosa parla?", "Quali dettagli contiene?", "Cosa devo aprire?"],
     });
+  }
+  if (!cloudAllowed("nvidia")) {
+    // Nessuna chiave NVIDIA: il riassunto passa dall'AI on-device (Ollama / LM Studio).
+    const result = await aiChatComplete({ messages, temperature, maxTokens, provider: "ollama" });
+    const content = result?.message?.content;
+    if (!content) throw new Error("AI locale senza contenuto. Installa Gemma offline o avvia Ollama.");
+    return String(content);
   }
   const keys = await discoverNvidiaApiKeys();
   if (!keys.length) {
@@ -2395,6 +2482,10 @@ function arrayOfStrings(value) {
 
 async function rerankWithNvidia(request) {
   const results = Array.isArray(request.results) ? request.results.slice(0, 18) : [];
+  if (!cloudAllowed("nvidia")) {
+    // Nessuna chiave NVIDIA: niente rerank cloud, si mantiene l'ordine locale.
+    return { orderedIds: results.map((item) => item.id), model: "local-order" };
+  }
   if (!String(request.query || "").trim() || results.length < 2) {
     return { orderedIds: results.map((item) => item.id), model: "local-order" };
   }
@@ -3704,6 +3795,7 @@ async function warmupLocalModels(args = {}) {
 
 async function discoverApiKeys() {
   const nvidia = await discoverNvidiaApiKeys();
+  await refreshCloudKeyState();
   return {
     geminiFound: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
     geminiSource: process.env.GEMINI_API_KEY ? "ambiente GEMINI_API_KEY" : process.env.GOOGLE_API_KEY ? "ambiente GOOGLE_API_KEY" : "",
@@ -3720,47 +3812,122 @@ async function discoverApiKeys() {
 // ============================================================
 
 async function aiProviderStatus() {
+  await refreshCloudKeyState();
   const nvidia = await discoverNvidiaApiKeys();
   const geminiKey = normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY);
   const ollama = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
   const lmstudio = await probeOpenAiCompatibleEndpoint(`${LMSTUDIO_BASE_URL}/v1/models`).catch(() => null);
+  const cloudProviders = [
+    {
+      id: "nvidia",
+      label: "NVIDIA NIM (cloud free)",
+      configured: nvidia.length > 0,
+      keyCount: nvidia.length,
+      models: Object.entries(NVIDIA_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
+      endpoint: NVIDIA_CHAT_URL,
+    },
+    {
+      id: "gemini",
+      label: "Google Gemini / Gemma (cloud free)",
+      configured: Boolean(geminiKey),
+      models: Object.entries(GEMINI_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
+      endpoint: "https://generativelanguage.googleapis.com",
+    },
+  ];
+  // I provider locali espongono i modelli come stringhe (nome tag Ollama/LM Studio):
+  // li normalizzo in { key, label } cosi il frontend trova la corrispondenza e mostra
+  // l'etichetta corretta (es. "gemma3:4b") invece di ripiegare sul modello cloud.
+  const toModelEntries = (names) => (names || []).map((name) => ({ key: name, label: name, category: "chat" }));
+  // Lista di modelli locali consigliati: oltre a quelli installati, mostro altre buone
+  // scelte on-device cosi l'utente sa cosa puo usare. Quelli non installati hanno categoria
+  // "da scaricare" (un "ollama pull <nome>" li attiva). I duplicati vengono uniti.
+  const RECOMMENDED_OLLAMA_MODELS = [
+    "gemma3:4b", "gemma3:12b", "gemma3:27b",
+    "llama3.2:3b", "llama3.1:8b",
+    "qwen2.5:7b", "qwen2.5:14b",
+    "phi4", "mistral:7b", "deepseek-r1:8b",
+  ];
+  const installedOllama = ollama?.models || [];
+  const installedSet = new Set(installedOllama);
+  const ollamaModels = [
+    ...installedOllama.map((name) => ({ key: name, label: name, category: "chat" })),
+    ...RECOMMENDED_OLLAMA_MODELS
+      .filter((name) => !installedSet.has(name))
+      .map((name) => ({ key: name, label: name, category: "da scaricare" })),
+  ];
+  const localProviders = [
+    {
+      id: "ollama",
+      label: "Ollama (locale, 100% offline)",
+      configured: Boolean(ollama?.ok),
+      endpoint: OLLAMA_BASE_URL,
+      models: ollamaModels,
+      hint: ollama?.ok ? "" : "Avvia ollama serve e fai 'ollama pull llama3.3'",
+    },
+    {
+      id: "lmstudio",
+      label: "LM Studio (locale, 100% offline)",
+      configured: Boolean(lmstudio?.ok),
+      endpoint: LMSTUDIO_BASE_URL,
+      models: toModelEntries(lmstudio?.models),
+      hint: lmstudio?.ok ? "" : "Avvia LM Studio e attiva il server su 1234",
+    },
+  ];
+  // Modello attivo: in solo-locale punta al primo modello locale disponibile,
+  // mai al modello cloud di default (Nemotron).
+  const localActiveModel = ollama?.models?.[0] || lmstudio?.models?.[0] || OLLAMA_DEFAULT_MODEL;
   return {
-    providers: [
-      {
-        id: "nvidia",
-        label: "NVIDIA NIM (cloud free)",
-        configured: nvidia.length > 0,
-        keyCount: nvidia.length,
-        models: Object.entries(NVIDIA_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
-        endpoint: NVIDIA_CHAT_URL,
-      },
-      {
-        id: "gemini",
-        label: "Google Gemini / Gemma (cloud free)",
-        configured: Boolean(geminiKey),
-        models: Object.entries(GEMINI_MODEL_REGISTRY).map(([key, value]) => ({ key, ...value })),
-        endpoint: "https://generativelanguage.googleapis.com",
-      },
-      {
-        id: "ollama",
-        label: "Ollama (locale, 100% offline)",
-        configured: Boolean(ollama?.ok),
-        endpoint: OLLAMA_BASE_URL,
-        models: ollama?.models || [],
-        hint: ollama?.ok ? "" : "Avvia ollama serve e fai 'ollama pull llama3.3'",
-      },
-      {
-        id: "lmstudio",
-        label: "LM Studio (locale, 100% offline)",
-        configured: Boolean(lmstudio?.ok),
-        endpoint: LMSTUDIO_BASE_URL,
-        models: lmstudio?.models || [],
-        hint: lmstudio?.ok ? "" : "Avvia LM Studio e attiva il server su 1234",
-      },
-    ],
-    activeProvider: TROVA_CHAT_PROVIDER,
-    activeModel: TROVA_CHAT_MODEL_KEY,
+    // Locale-first: i cloud restano elencati cosi l'utente puo aggiungere la chiave.
+    // localOnly = true finche nessuna chiave cloud e presente.
+    localOnly: !(cloudKeyState.nvidia || cloudKeyState.gemini),
+    cloudKeys: { nvidia: cloudKeyState.nvidia, gemini: cloudKeyState.gemini },
+    providers: [...localProviders, ...cloudProviders],
+    activeProvider: "ollama",
+    activeModel: LOCAL_ONLY ? localActiveModel : TROVA_CHAT_MODEL_KEY,
   };
+}
+
+/**
+ * Vision LOCALE: manda un'immagine al modello multimodale locale (Gemma 4/3) via Ollama.
+ * Usa l'API nativa /api/chat che accetta immagini base64. dataUrl: `data:image/...;base64,...`.
+ */
+async function localVisionImage(dataUrl, question) {
+  const match = String(dataUrl || "").match(/^data:image\/[^;]+;base64,(.+)$/);
+  if (!match) return { error: "Immagine non valida o non in formato data URL." };
+  const probe = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
+  if (!probe?.ok || !probe.models?.length) {
+    return { error: "AI locale non ancora pronta: il modello multimodale e in download. Riprova tra qualche minuto." };
+  }
+  const model = probe.models[0];
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          {
+            role: "user",
+            content: question || "Descrivi questa immagine in italiano in dettaglio. Se contiene testo, trascrivilo.",
+            images: [match[1]],
+          },
+        ],
+        options: { temperature: 0.2 },
+      }),
+      signal: AbortSignal.timeout(180_000),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return { error: `Vision locale ${response.status}: ${text.slice(0, 200)}` };
+    }
+    const data = await response.json();
+    const answer = data?.message?.content || "";
+    if (!answer) return { error: "Il modello locale non ha restituito una descrizione." };
+    return { ok: true, model, answer, source: "local-vision" };
+  } catch (err) {
+    return { error: String(err?.message || err) };
+  }
 }
 
 /**
@@ -3768,6 +3935,10 @@ async function aiProviderStatus() {
  * dataUrl deve essere `data:image/...;base64,...` (max ~5MB consigliato).
  */
 async function nvidiaVisionImage(dataUrl, question) {
+  if (!cloudAllowed("nvidia")) {
+    // Nessuna chiave NVIDIA: usa il modello multimodale locale (Gemma) via Ollama.
+    return localVisionImage(dataUrl, question);
+  }
   const keys = await discoverNvidiaApiKeys();
   if (!keys.length) return { error: "Nessuna chiave NVIDIA configurata" };
   if (!dataUrl || !dataUrl.startsWith("data:image/")) return { error: "dataUrl immagine mancante o non valido" };
@@ -3843,12 +4014,17 @@ async function aiChatComplete({ messages, provider = TROVA_CHAT_PROVIDER, modelK
   // Costruisce la catena di tentativi: prima il provider scelto, poi gli altri disponibili (robustezza)
   const primary = await resolveAiProvider(provider, modelKey);
   if (!primary) {
-    throw new Error("Nessun provider AI configurato. Vai in Impostazioni > Online: aggiungi una chiave NVIDIA o Gemini, oppure installa Gemma offline con un click.");
+    // Nessuna AI pronta: avvia da solo quella locale e spiega le opzioni.
+    void autoEnsureLocalAi();
+    const st = await loadState().catch(() => ({}));
+    const pct = st?.ollamaInstall?.running ? ` (${st.ollamaInstall.progress || 0}%)` : "";
+    throw new Error(`Sto installando l'AI locale (Gemma offline) in background${pct}. Riprova tra qualche minuto, oppure inserisci una chiave NVIDIA/Gemini nel tab Online.`);
   }
   const fallbackChain = [primary];
-  // Aggiungi fallback solo se il provider richiesto era 'auto' o non specificato
+  // Catena di fallback locale-first; i cloud entrano solo se la chiave esiste (gestito da resolveAiProvider)
+  const fallbackProviders = ["ollama", "lmstudio", "nvidia", "gemini"];
   if (provider === "auto" || !provider) {
-    for (const altProvider of ["nvidia", "gemini", "ollama", "lmstudio"]) {
+    for (const altProvider of fallbackProviders) {
       if (altProvider === primary.provider) continue;
       const alt = await resolveAiProvider(altProvider, modelKey).catch(() => null);
       if (alt) fallbackChain.push(alt);
@@ -3880,25 +4056,31 @@ async function aiChatComplete({ messages, provider = TROVA_CHAT_PROVIDER, modelK
 async function resolveAiProvider(requested, modelKey) {
   const nvidia = await discoverNvidiaApiKeys();
   const geminiKey = normalizeApiKey(process.env.GEMINI_API_KEY) || normalizeApiKey(process.env.GOOGLE_API_KEY);
-  const order = requested === "auto"
-    ? ["nvidia", "ollama", "lmstudio", "gemini"]
+  // Locale-first: prima i modelli on-device, poi i cloud SE la chiave esiste.
+  const order = requested === "auto" || !requested
+    ? ["ollama", "lmstudio", "nvidia", "gemini"]
     : [requested];
   for (const provider of order) {
-    if (provider === "nvidia" && nvidia.length) {
+    if (provider === "nvidia" && nvidia.length && cloudAllowed("nvidia")) {
       const def = NVIDIA_MODEL_REGISTRY[modelKey] || NVIDIA_MODEL_REGISTRY["nemotron-super-49b"];
       return { provider, modelId: def.id, apiKey: nvidia[0].key };
     }
-    if (provider === "gemini" && geminiKey) {
+    if (provider === "gemini" && geminiKey && cloudAllowed("gemini")) {
       const def = GEMINI_MODEL_REGISTRY[modelKey] || GEMINI_MODEL_REGISTRY["gemma-4-27b"];
       return { provider, modelId: def.id, apiKey: geminiKey };
     }
     if (provider === "ollama") {
       const probe = await probeOpenAiCompatibleEndpoint(`${OLLAMA_BASE_URL}/api/tags`).catch(() => null);
-      if (probe?.ok) return { provider, modelId: probe.models[0] || "llama3.3", apiKey: "ollama" };
+      // Richiede un modello effettivamente installato: server raggiungibile ma vuoto = non pronto.
+      // Se l'utente ha scelto un modello installato lo uso, altrimenti il primo disponibile.
+      if (probe?.ok && probe.models?.length) {
+        const chosen = modelKey && probe.models.includes(modelKey) ? modelKey : probe.models[0];
+        return { provider, modelId: chosen, apiKey: "ollama" };
+      }
     }
     if (provider === "lmstudio") {
       const probe = await probeOpenAiCompatibleEndpoint(`${LMSTUDIO_BASE_URL}/v1/models`).catch(() => null);
-      if (probe?.ok) return { provider, modelId: probe.models[0] || "loaded-model", apiKey: "lmstudio" };
+      if (probe?.ok && probe.models?.length) return { provider, modelId: probe.models[0], apiKey: "lmstudio" };
     }
   }
   return null;
@@ -4978,95 +5160,128 @@ async function canRunPasswordlessSudo() {
  * Aggiorna state.ollamaInstall con il progresso cosi la UI lo legge.
  * Modello scelto: gemma3:4b — bilanciamento qualita/dimensione per "nabbi".
  */
-const OLLAMA_DEFAULT_MODEL = process.env.TROVA_OLLAMA_DEFAULT_MODEL || "gemma3:4b";
+// Candidati modello in ordine di preferenza: Gemma 4 (nuovo, leggero) -> fallback Gemma 3 4B (sicuro).
+// Si prova a scaricare il primo disponibile; se un tag non esiste sul registro si passa al successivo.
+// Override completo via TROVA_OLLAMA_DEFAULT_MODEL (forza un solo modello).
+const OLLAMA_MODEL_CANDIDATES = process.env.TROVA_OLLAMA_DEFAULT_MODEL
+  ? [process.env.TROVA_OLLAMA_DEFAULT_MODEL]
+  : ["gemma4:4b", "gemma4:latest", "gemma3:4b"];
+const OLLAMA_DEFAULT_MODEL = OLLAMA_MODEL_CANDIDATES[0];
 let activeOllamaServerChild = null;
+// Mirror in memoria del progresso install: robusto a scritture concorrenti su state file
+let ollamaInstallProgress = null;
+// Guardia: una sola installazione alla volta (evita doppio download concorrente)
+let ollamaInstalling = false;
 
 async function installOllamaWithGemma() {
+  if (ollamaInstalling) {
+    return {
+      ok: true,
+      componentId: "ollama-gemma",
+      alreadyRunning: true,
+      message: "Installazione AI locale gia in corso",
+      steps: [],
+      components: await localComponentsStatus(await loadState()),
+    };
+  }
+  ollamaInstalling = true;
   const started = Date.now();
   const platform = os.platform();
   const arch = os.arch();
   const steps = [];
 
   const updateProgress = async (label, progress, detail = "") => {
+    const snapshot = { label, progress, detail, updatedAt: Date.now(), running: progress < 100 };
+    ollamaInstallProgress = snapshot;
     const state = await loadState();
-    state.ollamaInstall = { label, progress, detail, updatedAt: Date.now(), running: progress < 100 };
+    state.ollamaInstall = snapshot;
     await saveState(state);
   };
 
   try {
     await updateProgress("Scarico Ollama", 5, "Preparo l'installer");
 
-    // 1) Scarica binary Ollama
+    // 1) Binario Ollama: riusa quello gia installato, altrimenti scarica
     const target = ollamaDownloadTarget(platform, arch);
     if (!target) throw new Error(`Ollama non disponibile per ${platform}/${arch}`);
-    const installRoot = path.join(DATA_DIR, "install", `ollama-${Date.now()}`);
-    await fs.mkdir(installRoot, { recursive: true });
-    const archivePath = path.join(installRoot, target.archive);
-    const startedDownload = Date.now();
-    await updateProgress("Scarico Ollama", 10, `Da ${target.url}`);
-    const response = await fetch(target.url);
-    if (!response.ok) throw new Error(`Download Ollama fallito: HTTP ${response.status}`);
-    const totalBytes = Number(response.headers.get("content-length") || 0);
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("Stream Ollama non disponibile");
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (totalBytes) {
-        const pct = 10 + Math.floor((received / totalBytes) * 30);
-        await updateProgress("Scarico Ollama", Math.min(40, pct), `${(received / 1024 / 1024).toFixed(0)} / ${(totalBytes / 1024 / 1024).toFixed(0)} MB`);
-      }
-    }
-    await fs.writeFile(archivePath, Buffer.concat(chunks));
-    steps.push({ label: "Download Ollama", ok: true, durationMs: Date.now() - startedDownload, output: `${(received / 1024 / 1024).toFixed(0)} MB` });
-
-    // 2) Estrai binario
-    await updateProgress("Installo Ollama", 45, "Estraggo il binario");
-    const extractDir = path.join(installRoot, "extract");
-    await fs.mkdir(extractDir, { recursive: true });
-    if (target.archive.endsWith(".tar.zst")) {
-      const tar = await commandCandidate("tar", ["--version"]);
-      if (!tar) throw new Error("Serve tar per estrarre Ollama");
-      // tar moderno supporta --zstd; fallback a zstd | tar se serve
-      try {
-        await execFile(tar.command, [...tar.prefix, "--zstd", "-xf", archivePath, "-C", extractDir], {
-          timeout: 300_000,
-          maxBuffer: 4_000_000,
-        });
-      } catch {
-        // Fallback: decomprimi con zstd poi tar
-        const zstd = await commandCandidate("zstd", ["--version"]);
-        if (!zstd) throw new Error("Serve zstd o tar con supporto --zstd per estrarre Ollama");
-        const tarPath = archivePath.replace(/\.zst$/, "");
-        await execFile(zstd.command, [...zstd.prefix, "-d", "-f", archivePath, "-o", tarPath], { timeout: 300_000, maxBuffer: 4_000_000 });
-        await execFile(tar.command, [...tar.prefix, "-xf", tarPath, "-C", extractDir], { timeout: 300_000, maxBuffer: 4_000_000 });
-      }
-    } else if (target.archive.endsWith(".tgz") || target.archive.endsWith(".tar.gz")) {
-      const tar = await commandCandidate("tar", ["--version"]);
-      if (!tar) throw new Error("Serve tar per estrarre Ollama");
-      await execFile(tar.command, [...tar.prefix, "-xzf", archivePath, "-C", extractDir], {
-        timeout: 120_000,
-        maxBuffer: 1_000_000,
-      });
-    } else if (target.archive.endsWith(".zip")) {
-      await extractZip(archivePath, extractDir);
-    } else {
-      // Single binary (es. ollama-darwin)
-      await fs.copyFile(archivePath, path.join(extractDir, target.binary));
-    }
-    const binarySource = await findFileByName(extractDir, target.binary);
-    if (!binarySource) throw new Error("Binario Ollama non trovato nell'archivio");
-    // Ollama ha bisogno delle sue lib/: copio l'intera cartella estratta in una sede permanente
     const ollamaHome = path.join(BIN_DIR, "ollama-runtime");
-    await fs.rm(ollamaHome, { recursive: true, force: true });
-    await fs.cp(extractDir, ollamaHome, { recursive: true });
-    const destination = (await findFileByName(ollamaHome, target.binary)) || path.join(ollamaHome, "bin", target.binary);
-    await fs.chmod(destination, 0o755).catch(() => {});
-    steps.push({ label: "Installazione binary", ok: true, output: destination });
+    let destination = await findFileByName(ollamaHome, target.binary).catch(() => null);
+    if (destination) {
+      // Gia installato: niente ri-download (evita di riscaricare ~1.3GB a ogni avvio)
+      await updateProgress("Avvio Ollama", 50, "Ollama gia installato, avvio il server");
+      await fs.chmod(destination, 0o755).catch(() => {});
+      steps.push({ label: "Ollama gia presente", ok: true, output: destination });
+    } else {
+      const installRoot = path.join(DATA_DIR, "install", `ollama-${Date.now()}`);
+      await fs.mkdir(installRoot, { recursive: true });
+      const archivePath = path.join(installRoot, target.archive);
+      const startedDownload = Date.now();
+      await updateProgress("Scarico Ollama", 10, `Da ${target.url}`);
+      const response = await fetch(target.url);
+      if (!response.ok) throw new Error(`Download Ollama fallito: HTTP ${response.status}`);
+      const totalBytes = Number(response.headers.get("content-length") || 0);
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("Stream Ollama non disponibile");
+      const chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        if (totalBytes) {
+          const pct = 10 + Math.floor((received / totalBytes) * 30);
+          await updateProgress("Scarico Ollama", Math.min(40, pct), `${(received / 1024 / 1024).toFixed(0)} / ${(totalBytes / 1024 / 1024).toFixed(0)} MB`);
+        }
+      }
+      await fs.writeFile(archivePath, Buffer.concat(chunks));
+      steps.push({ label: "Download Ollama", ok: true, durationMs: Date.now() - startedDownload, output: `${(received / 1024 / 1024).toFixed(0)} MB` });
+
+      // 2) Estrai binario
+      await updateProgress("Installo Ollama", 45, "Estraggo il binario");
+      const extractDir = path.join(installRoot, "extract");
+      await fs.mkdir(extractDir, { recursive: true });
+      if (target.archive.endsWith(".tar.zst")) {
+        const tar = await commandCandidate("tar", ["--version"]);
+        if (!tar) throw new Error("Serve tar per estrarre Ollama");
+        // tar moderno supporta --zstd; fallback a zstd | tar se serve
+        try {
+          await execFile(tar.command, [...tar.prefix, "--zstd", "-xf", archivePath, "-C", extractDir], {
+            timeout: 300_000,
+            maxBuffer: 4_000_000,
+          });
+        } catch {
+          // Fallback: decomprimi con zstd poi tar
+          const zstd = await commandCandidate("zstd", ["--version"]);
+          if (!zstd) throw new Error("Serve zstd o tar con supporto --zstd per estrarre Ollama");
+          const tarPath = archivePath.replace(/\.zst$/, "");
+          await execFile(zstd.command, [...zstd.prefix, "-d", "-f", archivePath, "-o", tarPath], { timeout: 300_000, maxBuffer: 4_000_000 });
+          await execFile(tar.command, [...tar.prefix, "-xf", tarPath, "-C", extractDir], { timeout: 300_000, maxBuffer: 4_000_000 });
+        }
+      } else if (target.archive.endsWith(".tgz") || target.archive.endsWith(".tar.gz")) {
+        const tar = await commandCandidate("tar", ["--version"]);
+        if (!tar) throw new Error("Serve tar per estrarre Ollama");
+        await execFile(tar.command, [...tar.prefix, "-xzf", archivePath, "-C", extractDir], {
+          timeout: 120_000,
+          maxBuffer: 1_000_000,
+        });
+      } else if (target.archive.endsWith(".zip")) {
+        await extractZip(archivePath, extractDir);
+      } else {
+        // Single binary (es. ollama-darwin)
+        await fs.copyFile(archivePath, path.join(extractDir, target.binary));
+      }
+      const binarySource = await findFileByName(extractDir, target.binary);
+      if (!binarySource) throw new Error("Binario Ollama non trovato nell'archivio");
+      // Ollama ha bisogno delle sue lib/: copio l'intera cartella estratta in una sede permanente
+      await fs.rm(ollamaHome, { recursive: true, force: true });
+      await fs.cp(extractDir, ollamaHome, { recursive: true });
+      destination = (await findFileByName(ollamaHome, target.binary)) || path.join(ollamaHome, "bin", target.binary);
+      await fs.chmod(destination, 0o755).catch(() => {});
+      steps.push({ label: "Installazione binary", ok: true, output: destination });
+      // Pulizia staging: non lasciare ~2GB di scarti in .trova/install
+      await fs.rm(installRoot, { recursive: true, force: true }).catch(() => {});
+    }
 
     // 3) Avvia ollama serve in background
     await updateProgress("Avvio Ollama", 55, "Server locale su 127.0.0.1:11434");
@@ -5091,46 +5306,65 @@ async function installOllamaWithGemma() {
     if (!serverReady) throw new Error("Server Ollama non risponde su 127.0.0.1:11434");
     steps.push({ label: "Server Ollama in esecuzione", ok: true, output: "pid " + activeOllamaServerChild.pid });
 
-    // 4) Scarica modello Gemma 3 4B
-    await updateProgress("Scarico Gemma offline", 60, `${OLLAMA_DEFAULT_MODEL} (~3 GB, attendi 5-15 min)`);
-    const pullResp = await fetch(`${OLLAMA_BASE_URL}/api/pull`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: OLLAMA_DEFAULT_MODEL, stream: true }),
-    });
-    if (!pullResp.ok || !pullResp.body) throw new Error(`Pull Gemma fallito: HTTP ${pullResp.status}`);
-    const pullReader = pullResp.body.getReader();
-    const decoder = new TextDecoder();
-    let pullBuffer = "";
-    while (true) {
-      const { done, value } = await pullReader.read();
-      if (done) break;
-      pullBuffer += decoder.decode(value, { stream: true });
-      const lines = pullBuffer.split("\n");
-      pullBuffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line);
-          if (evt?.total && evt?.completed) {
-            const pct = 60 + Math.floor((evt.completed / evt.total) * 40);
-            await updateProgress("Scarico Gemma offline", Math.min(99, pct), evt.status || "in corso");
-          } else if (evt?.status) {
-            await updateProgress("Scarico Gemma offline", 70, evt.status);
-          }
-        } catch {
-          // riga non JSON
+    // 4) Scarica il primo modello disponibile tra i candidati (Gemma 4 -> Gemma 3)
+    let installedModel = "";
+    const pullErrors = [];
+    for (const candidate of OLLAMA_MODEL_CANDIDATES) {
+      await updateProgress("Scarico Gemma offline", 60, `${candidate} (~3 GB, attendi 5-15 min)`);
+      let streamError = "";
+      try {
+        const pullResp = await fetch(`${OLLAMA_BASE_URL}/api/pull`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: candidate, stream: true }),
+        });
+        if (!pullResp.ok || !pullResp.body) {
+          pullErrors.push(`${candidate}: HTTP ${pullResp.status}`);
+          continue; // tag non disponibile, prova il prossimo
         }
+        const pullReader = pullResp.body.getReader();
+        const decoder = new TextDecoder();
+        let pullBuffer = "";
+        while (true) {
+          const { done, value } = await pullReader.read();
+          if (done) break;
+          pullBuffer += decoder.decode(value, { stream: true });
+          const lines = pullBuffer.split("\n");
+          pullBuffer = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const evt = JSON.parse(line);
+              if (evt?.error) { streamError = String(evt.error); continue; }
+              if (evt?.total && evt?.completed) {
+                const pct = 60 + Math.floor((evt.completed / evt.total) * 40);
+                await updateProgress("Scarico Gemma offline", Math.min(99, pct), `${candidate}: ${evt.status || "in corso"}`);
+              } else if (evt?.status) {
+                await updateProgress("Scarico Gemma offline", 70, `${candidate}: ${evt.status}`);
+              }
+            } catch {
+              // riga non JSON
+            }
+          }
+        }
+        if (streamError) { pullErrors.push(`${candidate}: ${streamError}`); continue; }
+        installedModel = candidate;
+        break; // scaricato con successo
+      } catch (pullErr) {
+        pullErrors.push(`${candidate}: ${String(pullErr?.message || pullErr)}`);
       }
     }
-    steps.push({ label: `Modello ${OLLAMA_DEFAULT_MODEL} scaricato`, ok: true });
+    if (!installedModel) {
+      throw new Error(`Nessun modello scaricabile. Tentativi: ${pullErrors.join(" · ")}`);
+    }
+    steps.push({ label: `Modello ${installedModel} scaricato`, ok: true });
 
-    await updateProgress("Pronto", 100, `${OLLAMA_DEFAULT_MODEL} installato e attivo offline`);
+    await updateProgress("Pronto", 100, `${installedModel} installato e attivo offline`);
 
     return {
       ok: true,
       componentId: "ollama-gemma",
-      message: `Ollama + ${OLLAMA_DEFAULT_MODEL} installati in ${destination}`,
+      message: `Ollama + ${installedModel} installati in ${destination}`,
       steps,
       components: await localComponentsStatus(await loadState()),
       durationMs: Date.now() - started,
@@ -5144,6 +5378,8 @@ async function installOllamaWithGemma() {
       steps,
       components: await localComponentsStatus(await loadState()),
     };
+  } finally {
+    ollamaInstalling = false;
   }
 }
 
@@ -5458,8 +5694,17 @@ async function loadState() {
   }
 }
 
+let stateWriteSeq = 0;
 async function saveState(state) {
-  await fs.writeFile(STATE_PATH, JSON.stringify(state));
+  // Scrittura ATOMICA con nome temporaneo UNIVOCO: evita sia la corruzione da
+  // interruzione a meta, sia la collisione tra salvataggi concorrenti (che con un
+  // .tmp fisso causava ENOENT sul rename).
+  const tmp = `${STATE_PATH}.${process.pid}.${stateWriteSeq++}.${randomBytes(4).toString("hex")}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(state));
+  await fs.rename(tmp, STATE_PATH).catch(async (err) => {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  });
 }
 
 function defaultWatchPaths() {
