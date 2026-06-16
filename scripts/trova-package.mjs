@@ -110,35 +110,35 @@ async function runBuild(status) {
 }
 
 async function tool(id, label, binary, toolArgs) {
-  // Su Windows i tool installati via shim (npm, npx, pnpm, yarn) sono file .cmd/.bat
-  // che richiedono di passare per la shell — execFile diretto fallisce con ENOENT.
+  // Su Windows i tool .exe (node/cargo/rustc) si risolvono in modo affidabile con
+  // execFile diretto (Node usa PATH + PATHEXT). Gli shim .cmd/.bat (npm, npx, yarn)
+  // invece richiedono la shell. Quindi: prima provo diretto, poi fallback alla shell.
+  // (Prima usavamo sempre shell:true su Windows: cargo falliva passando da cmd.exe.)
   const onWindows = os.platform() === "win32";
-  try {
-    const { stdout, stderr } = await execFile(binary, toolArgs, {
-      cwd: ROOT,
-      timeout: 8000,
-      maxBuffer: 200_000,
-      shell: onWindows, // su Windows usa cmd.exe per risolvere .cmd/.bat shim
-      windowsHide: true,
-    });
-    return {
-      id,
-      label,
-      binary,
-      installed: true,
-      version: String(stdout || stderr).split("\n").find(Boolean) || "installato",
-      error: "",
-    };
-  } catch (err) {
-    return {
-      id,
-      label,
-      binary,
-      installed: false,
-      version: "",
-      error: err.message || String(err),
-    };
+  const shellAttempts = onWindows ? [false, true] : [false];
+  let lastError = "";
+  for (const useShell of shellAttempts) {
+    try {
+      const { stdout, stderr } = await execFile(binary, toolArgs, {
+        cwd: ROOT,
+        timeout: 20000,
+        maxBuffer: 200_000,
+        shell: useShell,
+        windowsHide: true,
+      });
+      return {
+        id,
+        label,
+        binary,
+        installed: true,
+        version: String(stdout || stderr).split("\n").find(Boolean) || "installato",
+        error: "",
+      };
+    } catch (err) {
+      lastError = err.message || String(err);
+    }
   }
+  return { id, label, binary, installed: false, version: "", error: lastError };
 }
 
 async function fileExists(filePath) {
