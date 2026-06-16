@@ -180,6 +180,9 @@ async function runStep(step) {
       timeout: 1_800_000,
       maxBuffer: 5_000_000,
       env: process.env,
+      // Su Windows npm/npx sono shim .cmd: senza shell execFile fallisce con "spawn npm ENOENT".
+      shell: os.platform() === "win32",
+      windowsHide: true,
     });
     return { ok: true, output: trimOutput(`${stdout || ""}\n${stderr || ""}`) };
   } catch (err) {
