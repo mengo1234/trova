@@ -113,13 +113,24 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Alias a nome fisso (link diretti stabili sul sito, indipendenti dalla versione)
+        shell: bash
+        run: |
+          mkdir -p aliases
+          pick() { find artifacts -name "$1" -type f | head -1; }
+          f=$(pick '*.deb');        [ -n "$f" ] && cp "$f" aliases/Trova-linux.deb
+          f=$(pick '*.rpm');        [ -n "$f" ] && cp "$f" aliases/Trova-linux.rpm
+          f=$(pick '*.AppImage');   [ -n "$f" ] && cp "$f" aliases/Trova-linux.AppImage
+          f=$(pick '*.dmg');        [ -n "$f" ] && cp "$f" aliases/Trova-macos.dmg
+          f=$(pick '*-setup.exe');  [ -n "$f" ] && cp "$f" aliases/Trova-windows-setup.exe
+          f=$(pick '*_en-US.msi');  [ -n "$f" ] && cp "$f" aliases/Trova-windows.msi
+          ls -la aliases || true
       - uses: softprops/action-gh-release@v2
         with:
           draft: false
           make_latest: true
           fail_on_unmatched_files: false
-          # SOLO gli installer reali (no file interni .deb / node a 0 byte / nomi duplicati,
-          # che facevano fallire il publish con "size must be >= 1").
+          # Installer reali (nomi versionati) + alias a nome fisso (download diretto dal sito).
           files: |
             artifacts/**/*.deb
             artifacts/**/*.rpm
@@ -128,3 +139,4 @@ jobs:
             artifacts/**/*.app.tar.gz
             artifacts/**/*.msi
             artifacts/**/*.exe
+            aliases/*
